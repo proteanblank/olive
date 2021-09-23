@@ -35,6 +35,11 @@ class TimelinePanel : public TimeBasedPanel
 public:
   TimelinePanel(QWidget* parent);
 
+  inline TimelineWidget *timeline_widget() const
+  {
+    return static_cast<TimelineWidget*>(GetTimeBasedWidget());
+  }
+
   void SplitAtPlayhead();
 
   QByteArray SaveSplitterState() const;
@@ -61,10 +66,6 @@ public:
 
   virtual void DecreaseTrackHeight() override;
 
-  virtual void Insert() override;
-
-  virtual void Overwrite() override;
-
   virtual void ToggleLinks() override;
 
   virtual void CutSelected() override;
@@ -83,13 +84,26 @@ public:
 
   virtual void SetColorLabel(int index) override;
 
+  virtual void NudgeLeft() override;
+
+  virtual void NudgeRight() override;
+
+  virtual void MoveInToPlayhead() override;
+
+  virtual void MoveOutToPlayhead() override;
+
+  void ShowSpeedDurationDialogForSelectedClips()
+  {
+    timeline_widget()->ShowSpeedDurationDialogForSelectedClips();
+  }
+
   void InsertFootageAtPlayhead(const QVector<ViewerOutput *> &footage);
 
   void OverwriteFootageAtPlayhead(const QVector<ViewerOutput *> &footage);
 
   const QVector<Block*>& GetSelectedBlocks() const
   {
-    return static_cast<TimelineWidget*>(GetTimeBasedWidget())->GetSelectedBlocks();
+    return timeline_widget()->GetSelectedBlocks();
   }
 
 protected:

@@ -31,12 +31,19 @@
 #include <QApplication>
 #include <QFileInfo>
 
+#include "core.h"
+#include "node/audio/volume/volume.h"
 #include "node/block/clip/clip.h"
 #include "node/block/gap/gap.h"
 #include "node/block/transition/crossdissolve/crossdissolvetransition.h"
+#include "node/distort/transform/transformdistortnode.h"
+#include "node/generator/matrix/matrix.h"
+#include "node/math/math/math.h"
 #include "node/project/folder/folder.h"
 #include "node/project/footage/footage.h"
 #include "node/project/sequence/sequence.h"
+#include "window/mainwindow/mainwindowundo.h"
+#include "widget/nodeview/nodeviewundo.h"
 #include "widget/timelinewidget/undo/timelineundogeneral.h"
 
 namespace olive {
@@ -58,7 +65,7 @@ bool LoadOTIOTask::Run()
   }
 
   project_ = new Project();
-  project_->set_filename(GetFilename());
+  project_->set_modified(true);
 
   std::vector<OTIO::Timeline*> timelines;
 
@@ -88,6 +95,12 @@ bool LoadOTIOTask::Run()
     sequence->SetLabel(QString::fromStdString(timeline->name()));
     sequence->setParent(project_);
     FolderAddChild(project_->root(), sequence).redo_now();
+
+    // Create a folder for this sequence's footage
+    Folder* sequence_footage = new Folder();
+    sequence_footage->SetLabel(QString::fromStdString(timeline->name()));
+    sequence_footage->setParent(project_);
+    FolderAddChild(project_->root(), sequence_footage).redo_now();
 
     // FIXME: As far as I know, OTIO doesn't store video/audio parameters?
     sequence->set_default_parameters();
@@ -168,7 +181,9 @@ bool LoadOTIOTask::Run()
           duration =
               rational::fromDouble(static_cast<OTIO::Item*>(otio_block)->source_range()->duration().to_seconds());
 
-          block->set_media_in(start_time);
+          if (otio_block->schema_name() == "Clip") {
+            static_cast<ClipBlock*>(block)->set_media_in(start_time);
+          }
           block->set_length_and_media_out(duration);
         }
 
@@ -183,16 +198,27 @@ bool LoadOTIOTask::Run()
           TransitionBlock* transition_block = static_cast<TransitionBlock*>(block);
           OTIO::Transition* otio_block_transition = static_cast<OTIO::Transition*>(otio_block);
 
-          duration = rational::fromDouble((otio_block_transition->in_offset() + otio_block_transition->out_offset()).to_seconds());
-          transition_block->set_length_and_media_out(duration);
+          // Set how far the transition eats into the previous clip
+          transition_block->set_offsets_and_length(rational::fromRationalTime(otio_block_transition->in_offset()), rational::fromRationalTime(otio_block_transition->out_offset()));
 
           if (previous_block) {
             Node::ConnectEdge(previous_block, NodeInput(transition_block, TransitionBlock::kOutBlockInput));
-
-            // Set how far the transition eats into the previous clip
-            transition_block->set_media_in(rational::fromDouble(-otio_block_transition->out_offset().to_seconds()));
           }
           prev_block_transition = true;
+
+          // Add nodes to the graph and set up contexts
+          block->setParent(sequence->parent());
+
+          // Position transition in its own context
+          sequence->parent()->SetNodePosition(block, block, QPointF(0, 0));
+        }
+
+        if (otio_block->schema_name() == "Gap") {
+          // Add nodes to the graph and set up contexts
+          block->setParent(sequence->parent());
+
+          // Position transition in its own context
+          sequence->parent()->SetNodePosition(block, block, QPointF(0, 0));
         }
 
         // Update this after it's used but before any continue statements
@@ -215,22 +241,42 @@ bool LoadOTIOTask::Run()
               probed_item = new Footage(footage_url);
               imported_footage.insert(footage_url, probed_item);
               probed_item->setParent(project_);
+
+
+              QFileInfo info(probed_item->filename());
+              probed_item->SetLabel(info.fileName());
+
+              FolderAddChild add(sequence_footage, probed_item, true);
+              add.redo_now();
             }
 
-            Track::Reference reference;
+            // Add nodes to the graph and set up contexts
+            block->setParent(sequence->parent());
+
+            // Position clip in its own context
+            sequence->parent()->SetNodePosition(block, block, QPointF(0, 0));
+
+            // Position footage in its context
+            sequence->parent()->SetNodePosition(probed_item, block, QPointF(-2, 0));
+
 
             if (track->type() == Track::kVideo) {
-              reference = Track::Reference(Track::kVideo, 0);
+              TransformDistortNode* transform = new TransformDistortNode();
+              transform->setParent(sequence->parent());
+
+              Node::ConnectEdge(probed_item, NodeInput(transform, TransformDistortNode::kTextureInput));
+              Node::ConnectEdge(transform, NodeInput(block, ClipBlock::kBufferIn));
+              sequence->parent()->SetNodePosition(transform, block, QPointF(-1, 0));
             } else {
-              reference = Track::Reference(Track::kAudio, 0);
+              VolumeNode* volume_node = new VolumeNode();
+              volume_node->setParent(sequence->parent());
+
+              Node::ConnectEdge(probed_item, NodeInput(volume_node, VolumeNode::kSamplesInput));
+              Node::ConnectEdge(volume_node, NodeInput(block, ClipBlock::kBufferIn));
+              sequence->parent()->SetNodePosition(volume_node, block, QPointF(-1, 0));
             }
-
-            QString output_id = reference.ToString();
-
-            Node::ConnectEdge(NodeOutput(probed_item, output_id), NodeInput(block, ClipBlock::kBufferIn));
           }
         }
-
       }
     }
   }

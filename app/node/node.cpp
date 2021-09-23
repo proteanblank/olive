@@ -35,24 +35,20 @@
 #include "project/project.h"
 #include "ui/colorcoding.h"
 #include "ui/icons/icons.h"
+#include "widget/nodeparamview/nodeparamviewundo.h"
 #include "widget/nodeview/nodeviewundo.h"
 
 namespace olive {
 
 #define super QObject
 
-const QString Node::kDefaultOutput = QStringLiteral("output");
-
-Node::Node(bool create_default_output) :
+Node::Node() :
   can_be_deleted_(true),
   override_color_(-1),
   folder_(nullptr),
   operation_stack_(0),
   cache_result_(false)
 {
-  if (create_default_output) {
-    AddOutput();
-  }
 }
 
 Node::~Node()
@@ -127,9 +123,9 @@ void Node::Load(QXmlStreamReader *reader, XMLNodeData& xml_node_data, uint versi
           QString output_param_id;
 
           while (XMLReadNextStartElement(reader)) {
-            if (reader->name() == QStringLiteral("node")) {
+            if ((version >= 210907 && reader->name() == QStringLiteral("output")) || reader->name() == QStringLiteral("node")) {
               output_node_id = reader->readElementText();
-            } else if (reader->name() == QStringLiteral("output")) {
+            } else if (version < 210907 && reader->name() == QStringLiteral("output")) {
               output_param_id = reader->readElementText();
             } else {
               reader->skipCurrentElement();
@@ -137,6 +133,28 @@ void Node::Load(QXmlStreamReader *reader, XMLNodeData& xml_node_data, uint versi
           }
 
           xml_node_data.desired_connections.append({NodeInput(this, param_id, ele), output_node_id.toULongLong(), output_param_id});
+        } else {
+          reader->skipCurrentElement();
+        }
+      }
+    } else if (reader->name() == QStringLiteral("hints")) {
+      while (XMLReadNextStartElement(reader)) {
+        if (reader->name() == QStringLiteral("hint")) {
+          QString input;
+          int element = -1;
+
+          XMLAttributeLoop(reader, attr) {
+            if (attr.name() == QStringLiteral("input")) {
+              input = attr.value().toString();
+            } else if (attr.name() == QStringLiteral("element")) {
+              element = attr.value().toInt();
+            }
+          }
+
+          ValueHint vh;
+          vh.Load(reader);
+
+          value_hints_.insert({input, element}, vh);
         } else {
           reader->skipCurrentElement();
         }
@@ -175,12 +193,24 @@ void Node::Save(QXmlStreamWriter *writer) const
     writer->writeAttribute(QStringLiteral("input"), it->first.input());
     writer->writeAttribute(QStringLiteral("element"), QString::number(it->first.element()));
 
-    writer->writeTextElement(QStringLiteral("node"), QString::number(reinterpret_cast<quintptr>(it->second.node())));
-    writer->writeTextElement(QStringLiteral("output"), it->second.output());
+    writer->writeTextElement(QStringLiteral("output"), QString::number(reinterpret_cast<quintptr>(it->second)));
 
     writer->writeEndElement(); // connection
   }
   writer->writeEndElement(); // connections
+
+  writer->writeStartElement(QStringLiteral("hints"));
+  for (auto it=value_hints_.cbegin(); it!=value_hints_.cend(); it++) {
+    writer->writeStartElement(QStringLiteral("hint"));
+
+    writer->writeAttribute(QStringLiteral("input"), it.key().input);
+    writer->writeAttribute(QStringLiteral("element"), QString::number(it.key().element));
+
+    it.value().Save(writer);
+
+    writer->writeEndElement(); // hint
+  }
+  writer->writeEndElement();
 
   writer->writeStartElement(QStringLiteral("custom"));
   SaveCustom(writer);
@@ -250,25 +280,25 @@ QBrush Node::brush(qreal top, qreal bottom) const
   }
 }
 
-void Node::ConnectEdge(const NodeOutput &output, const NodeInput &input)
+void Node::ConnectEdge(Node *output, const NodeInput &input)
 {
   // Ensure graph is the same
-  Q_ASSERT(input.node()->parent() == output.node()->parent());
+  Q_ASSERT(input.node()->parent() == output->parent());
 
   // Ensure a connection isn't getting overwritten
   Q_ASSERT(input.node()->input_connections().find(input) == input.node()->input_connections().end());
 
   // Insert connection on both sides
   input.node()->input_connections_[input] = output;
-  output.node()->output_connections_.push_back(std::pair<NodeOutput, NodeInput>({output, input}));
+  output->output_connections_.push_back(std::pair<Node*, NodeInput>({output, input}));
 
   // Call internal events
   input.node()->InputConnectedEvent(input.input(), input.element(), output);
-  output.node()->OutputConnectedEvent(output.output(), input);
+  output->OutputConnectedEvent(input);
 
   // Emit signals
   emit input.node()->InputConnected(output, input);
-  emit output.node()->OutputConnected(output, input);
+  emit output->OutputConnected(output, input);
 
   // Invalidate all if this node isn't ignoring this input
   if (!input.node()->ignore_connections_.contains(input.input())) {
@@ -276,10 +306,10 @@ void Node::ConnectEdge(const NodeOutput &output, const NodeInput &input)
   }
 }
 
-void Node::DisconnectEdge(const NodeOutput &output, const NodeInput &input)
+void Node::DisconnectEdge(Node *output, const NodeInput &input)
 {
   // Ensure graph is the same
-  Q_ASSERT(input.node()->parent() == output.node()->parent());
+  Q_ASSERT(input.node()->parent() == output->parent());
 
   // Ensure connection exists
   Q_ASSERT(input.node()->input_connections().at(input) == output);
@@ -288,15 +318,15 @@ void Node::DisconnectEdge(const NodeOutput &output, const NodeInput &input)
   InputConnections& inputs = input.node()->input_connections_;
   inputs.erase(inputs.find(input));
 
-  OutputConnections& outputs = output.node()->output_connections_;
-  outputs.erase(std::find(outputs.begin(), outputs.end(), std::pair<NodeOutput, NodeInput>({output, input})));
+  OutputConnections& outputs = output->output_connections_;
+  outputs.erase(std::find(outputs.begin(), outputs.end(), std::pair<Node*, NodeInput>({output, input})));
 
   // Call internal events
   input.node()->InputDisconnectedEvent(input.input(), input.element(), output);
-  output.node()->OutputDisconnectedEvent(output.output(), input);
+  output->OutputDisconnectedEvent(input);
 
   emit input.node()->InputDisconnected(output, input);
-  emit output.node()->OutputDisconnected(output, input);
+  emit output->OutputDisconnected(output, input);
 
   if (!input.node()->ignore_connections_.contains(input.input())) {
     input.node()->InvalidateAll(input.input(), input.element());
@@ -439,10 +469,10 @@ void Node::SetInputIsKeyframing(const QString &input, bool e, int element)
 
 bool Node::IsInputConnected(const QString &input, int element) const
 {
-  return GetConnectedOutput(input, element).IsValid();
+  return GetConnectedOutput(input, element);
 }
 
-NodeOutput Node::GetConnectedOutput(const QString &input, int element) const
+Node *Node::GetConnectedOutput(const QString &input, int element) const
 {
   for (auto it=input_connections_.cbegin(); it!=input_connections_.cend(); it++) {
     if (it->first.input() == input && it->first.element() == element) {
@@ -450,7 +480,7 @@ NodeOutput Node::GetConnectedOutput(const QString &input, int element) const
     }
   }
 
-  return NodeOutput();
+  return nullptr;
 }
 
 bool Node::IsUsingStandardValue(const QString &input, int track, int element) const
@@ -551,11 +581,7 @@ SplitValue Node::GetSplitValueAtTime(const QString &input, const rational &time,
   int nb_tracks = GetNumberOfKeyframeTracks(input);
 
   for (int i=0;i<nb_tracks;i++) {
-    if (IsUsingStandardValue(input, i, element)) {
-      vals.append(GetSplitStandardValueOnTrack(input, i, element));
-    } else {
-      vals.append(GetSplitValueAtTimeOnTrack(input, time, i, element));
-    }
+    vals.append(GetSplitValueAtTimeOnTrack(input, time, i, element));
   }
 
   return vals;
@@ -579,10 +605,27 @@ QVariant Node::GetSplitValueAtTimeOnTrack(const QString &input, const rational &
     NodeValue::Type type = GetInputDataType(input);
 
     // If we're here, the time must be somewhere in between the keyframes
-    for (int i=0;i<key_track.size()-1;i++) {
-      NodeKeyframe* before = key_track.at(i);
-      NodeKeyframe* after = key_track.at(i+1);
+    NodeKeyframe *before = nullptr, *after = nullptr;
 
+    int low = 0;
+    int high = key_track.size()-1;
+    while (low <= high) {
+      int mid = low + (high - low) / 2;
+      NodeKeyframe *mid_key = key_track.at(mid);
+      NodeKeyframe *next_key = key_track.at(mid + 1);
+
+      if (mid_key->time() <= time && next_key->time() > time) {
+        before = mid_key;
+        after = next_key;
+        break;
+      } else if (mid_key->time() < time) {
+        low = mid + 1;
+      } else {
+        high = mid - 1;
+      }
+    }
+
+    if (before) {
       if (before->time() == time
           || ((!NodeValue::type_can_be_interpolated(type) || before->type() == NodeKeyframe::kHold) && after->time() > time)) {
 
@@ -607,46 +650,34 @@ QVariant Node::GetSplitValueAtTimeOnTrack(const QString &input, const rational &
         }
 
         if (before->type() == NodeKeyframe::kBezier && after->type() == NodeKeyframe::kBezier) {
+
           // Perform a cubic bezier with two control points
-
-          double t = Bezier::CubicXtoT(time.toDouble(),
-                                       before->time().toDouble(),
-                                       before->time().toDouble() + before->valid_bezier_control_out().x(),
-                                       after->time().toDouble() + after->valid_bezier_control_in().x(),
-                                       after->time().toDouble());
-
-          double y = Bezier::CubicTtoY(before_val,
-                                       before_val + before->valid_bezier_control_out().y(),
-                                       after_val + after->valid_bezier_control_in().y(),
-                                       after_val,
-                                       t);
-
-          interpolated = y;
+          interpolated = Bezier::CubicXtoY(time.toDouble(),
+                                           QPointF(before->time().toDouble(), before_val),
+                                           QPointF(before->time().toDouble() + before->valid_bezier_control_out().x(), before_val + before->valid_bezier_control_out().y()),
+                                           QPointF(after->time().toDouble() + after->valid_bezier_control_in().x(), after_val + after->valid_bezier_control_in().y()),
+                                           QPointF(after->time().toDouble(), after_val));
 
         } else if (before->type() == NodeKeyframe::kBezier || after->type() == NodeKeyframe::kBezier) {
           // Perform a quadratic bezier with only one control point
 
           QPointF control_point;
-          double control_point_time;
-          double control_point_value;
 
           if (before->type() == NodeKeyframe::kBezier) {
             control_point = before->valid_bezier_control_out();
-            control_point_time = before->time().toDouble() + control_point.x();
-            control_point_value = before_val + control_point.y();
+            control_point.setX(control_point.x() + before->time().toDouble());
+            control_point.setY(control_point.y() + before_val);
           } else {
             control_point = after->valid_bezier_control_in();
-            control_point_time = after->time().toDouble() + control_point.x();
-            control_point_value = after_val + control_point.y();
+            control_point.setX(control_point.x() + after->time().toDouble());
+            control_point.setY(control_point.y() + after_val);
           }
 
-          // Generate T from time values - used to determine bezier progress
-          double t = Bezier::QuadraticXtoT(time.toDouble(), before->time().toDouble(), control_point_time, after->time().toDouble());
-
-          // Generate value using T
-          double y = Bezier::QuadraticTtoY(before_val, control_point_value, after_val, t);
-
-          interpolated = y;
+          // Interpolate value using quadratic beziers
+          interpolated = Bezier::QuadraticXtoY(time.toDouble(),
+                                               QPointF(before->time().toDouble(), before_val),
+                                               control_point,
+                                               QPointF(after->time().toDouble(), after_val));
 
         } else {
           // To have arrived here, the keyframes must both be linear
@@ -661,6 +692,8 @@ QVariant Node::GetSplitValueAtTimeOnTrack(const QString &input, const rational &
           return interpolated;
         }
       }
+    } else {
+      qWarning() << "Binary search for keyframes failed";
     }
   }
 
@@ -980,6 +1013,21 @@ int Node::InputArraySize(const QString &id) const
   }
 }
 
+void Node::Hash(const Node *node, const ValueHint &hint, QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams &video_params)
+{
+  hint.Hash(hash);
+  node->Hash(hash, globals, video_params);
+}
+
+void Node::SetValueHintForInput(const QString &input, const ValueHint &hint, int element)
+{
+  value_hints_.insert({input, element}, hint);
+
+  emit InputValueHintChanged(NodeInput(this, input, element));
+
+  InvalidateAll(input, element);
+}
+
 const NodeKeyframeTrack &Node::GetTrackFromKeyframe(NodeKeyframe *key) const
 {
   return GetImmediate(key->input(), key->element())->keyframe_tracks().at(key->track());
@@ -1012,11 +1060,12 @@ Node::InputFlags Node::GetInputFlags(const QString &input) const
   }
 }
 
-NodeValueTable Node::Value(const QString& output, NodeValueDatabase &value) const
+void Node::Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const
 {
-  Q_UNUSED(output)
-
-  return value.Merge();
+  // Do nothing
+  Q_UNUSED(value)
+  Q_UNUSED(globals)
+  Q_UNUSED(table)
 }
 
 void Node::InvalidateCache(const TimeRange &range, const QString &from, int element, InvalidateCacheOptions options)
@@ -1089,19 +1138,19 @@ void Node::CopyDependencyGraph(const QVector<Node *> &src, const QVector<Node *>
 
     for (auto it=src_node->input_connections_.cbegin(); it!=src_node->input_connections_.cend(); it++) {
       // Determine if the connected node is in our src list
-      int connection_index = src.indexOf(it->second.node());
+      int connection_index = src.indexOf(it->second);
 
       if (connection_index > -1) {
         // Find the equivalent node in the dst list
-        Node* dst_connection = dst.at(connection_index);
-
-        NodeOutput copied_output = NodeOutput(dst_connection, it->second.output());
+        Node *copied_output = dst.at(connection_index);
         NodeInput copied_input = NodeInput(dst_node, it->first.input(), it->first.element());
 
         if (command) {
           command->add_child(new NodeEdgeAddCommand(copied_output, copied_input));
+          command->add_child(new NodeSetValueHintCommand(copied_input, src_node->GetValueHintForInput(copied_input.input(), copied_input.element())));
         } else {
           ConnectEdge(copied_output, copied_input);
+          copied_input.node()->SetValueHintForInput(copied_input.input(), src_node->GetValueHintForInput(copied_input.input(), copied_input.element()), copied_input.element());
         }
       }
     }
@@ -1125,8 +1174,7 @@ Node *Node::CopyNodeAndDependencyGraphMinusItemsInternal(QMap<Node*, Node*>& cre
   // Go through input connections and copy if non-item and connect if item
   for (auto it=node->input_connections_.cbegin(); it!=node->input_connections_.cend(); it++) {
     NodeInput input = it->first;
-    NodeOutput output = it->second;
-    Node* connected = output.node();
+    Node* connected = it->second;
     Node* connected_copy;
 
     if (connected->IsItem()) {
@@ -1141,8 +1189,9 @@ Node *Node::CopyNodeAndDependencyGraphMinusItemsInternal(QMap<Node*, Node*>& cre
       }
     }
 
-    command->add_child(new NodeEdgeAddCommand(NodeOutput(connected_copy, output.output()),
-                                              NodeInput(copy, input.input(), input.element())));
+    NodeInput copied_input(copy, input.input(), input.element());
+    command->add_child(new NodeEdgeAddCommand(connected_copy, copied_input));
+    command->add_child(new NodeSetValueHintCommand(copied_input, node->GetValueHintForInput(input.input(), input.element())));
   }
 
   if (node->parent()->GetPositionMap().contains(node)) {
@@ -1253,6 +1302,12 @@ bool Node::AreLinked(Node *a, Node *b)
   return a->links_.contains(b);
 }
 
+void Node::HashAddNodeSignature(QCryptographicHash &hash) const
+{
+  // Add node ID
+  hash.addData(id().toUtf8());
+}
+
 void Node::InsertInput(const QString &id, NodeValue::Type type, const QVariant &default_value, Node::InputFlags flags, int index)
 {
   if (id.isEmpty()) {
@@ -1295,32 +1350,6 @@ void Node::RemoveInput(const QString &id)
   input_data_.removeAt(index);
 
   emit InputRemoved(id);
-}
-
-void Node::AddOutput(const QString &id)
-{
-  if (id.isEmpty()) {
-    qWarning() << "Rejected adding output with an empty ID on node" << this->id();
-    return;
-  }
-
-  if (HasParamWithID(id)) {
-    qWarning() << "Failed to add output to node" << this->id() << "- param with ID" << id << "already exists";
-    return;
-  }
-
-  outputs_.append(id);
-
-  emit OutputAdded(id);
-}
-
-void Node::RemoveOutput(const QString &id)
-{
-  if (outputs_.removeOne(id)) {
-    emit OutputRemoved(id);
-  } else {
-    ReportInvalidInput("remove", id);
-  }
 }
 
 void Node::ReportInvalidInput(const char *attempted_action, const QString& id) const
@@ -1413,16 +1442,16 @@ bool Node::HasGizmos() const
   return false;
 }
 
-void Node::DrawGizmos(NodeValueDatabase &, QPainter *)
+void Node::DrawGizmos(const NodeValueRow &, const NodeGlobals &, QPainter *)
 {
 }
 
-bool Node::GizmoPress(NodeValueDatabase &, const QPointF &)
+bool Node::GizmoPress(const NodeValueRow &, const NodeGlobals &, const QPointF &)
 {
   return false;
 }
 
-void Node::GizmoMove(const QPointF &, const rational&)
+void Node::GizmoMove(const QPointF &, const rational&, const Qt::KeyboardModifiers &)
 {
 }
 
@@ -1444,16 +1473,29 @@ void Node::SetLabel(const QString &s)
   }
 }
 
-void Node::Hash(const QString &output, QCryptographicHash &hash, const rational& time, const VideoParams &video_params) const
+QString Node::GetLabelAndName() const
 {
-  Q_UNUSED(output)
+  if (GetLabel().isEmpty()) {
+    return Name();
+  } else {
+    return tr("%1 (%2)").arg(GetLabel(), Name());
+  }
+}
 
+QString Node::GetLabelOrName() const
+{
+  if (GetLabel().isEmpty()) {
+    return Name();
+  }
+  return GetLabel();
+}
+
+void Node::Hash(QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams &video_params) const
+{
   // Add this Node's ID and output being used
-  hash.addData(id().toUtf8());
-  hash.addData(output.toUtf8());
+  HashAddNodeSignature(hash);
 
-  auto inputs = inputs_for_output(output);
-  foreach (const QString& input, inputs) {
+  foreach (const QString& input, inputs()) {
     // For each input, try to hash its value
     if (ignore_when_hashing_.contains(input)) {
       continue;
@@ -1461,7 +1503,7 @@ void Node::Hash(const QString &output, QCryptographicHash &hash, const rational&
 
     int arr_sz = InputArraySize(input);
     for (int i=-1; i<arr_sz; i++) {
-      HashInputElement(hash, input, i, time, video_params);
+      HashInputElement(hash, input, i, globals, video_params);
     }
   }
 }
@@ -1536,6 +1578,9 @@ void Node::CopyValuesOfElement(const Node *src, Node *dst, const QString &input,
   if (src_element == -1 && dst_element == -1) {
     dst->ArrayResizeInternal(input, src->InputArraySize(input));
   }
+
+  // Copy value hint
+  dst->SetValueHintForInput(input, src->GetValueHintForInput(input, src_element), dst_element);
 }
 
 bool Node::CanBeDeleted() const
@@ -1551,10 +1596,9 @@ void Node::SetCanBeDeleted(bool s)
 void GetDependenciesRecursively(QVector<Node*>& list, const Node* node, bool traverse, bool exclusive_only)
 {
   for (auto it=node->input_connections().cbegin(); it!=node->input_connections().cend(); it++) {
-    Node* connected_node = it->second.node();
+    Node* connected_node = it->second;
 
-    if (!exclusive_only
-        || (connected_node->outputs().size() == 1 && !connected_node->IsItem())) {
+    if (!exclusive_only || !connected_node->IsItem()) {
       if (!list.contains(connected_node)) {
         list.append(connected_node);
 
@@ -1583,20 +1627,22 @@ QVector<Node *> Node::GetDependenciesInternal(bool traverse, bool exclusive_only
   return list;
 }
 
-void Node::HashInputElement(QCryptographicHash &hash, const QString& input, int element, const rational &time, const VideoParams& video_params) const
+void Node::HashInputElement(QCryptographicHash &hash, const QString& input, int element, const NodeGlobals &globals, const VideoParams& video_params) const
 {
   // Get time adjustment
   // For a single frame, we only care about one of the times
-  rational input_time = InputTimeAdjustment(input, element, TimeRange(time, time)).in();
+  TimeRange input_time = InputTimeAdjustment(input, element, globals.time());
 
   if (IsInputConnected(input, element)) {
     // Traverse down this edge
-    NodeOutput output = GetConnectedOutput(input, element);
+    Node *output = GetConnectedOutput(input, element);
 
-    output.node()->Hash(output.output(), hash, input_time, video_params);
+    NodeGlobals new_globals = globals;
+    new_globals.set_time(input_time);
+    Node::Hash(output, GetValueHintForInput(input, element), hash, new_globals, video_params);
   } else {
     // Grab the value at this time
-    QVariant value = GetValueAtTime(input, input_time, element);
+    QVariant value = GetValueAtTime(input, input_time.in(), element);
     hash.addData(NodeValue::ValueToBytes(GetInputDataType(input), value));
   }
 }
@@ -1623,7 +1669,7 @@ ShaderCode Node::GetShaderCode(const QString &shader_id) const
   return ShaderCode(QString(), QString());
 }
 
-void Node::ProcessSamples(NodeValueDatabase &, const SampleBufferPtr, SampleBufferPtr, int) const
+void Node::ProcessSamples(const NodeValueRow &, const SampleBufferPtr, SampleBufferPtr, int) const
 {
 }
 
@@ -1647,7 +1693,7 @@ bool Node::OutputsTo(Node *n, bool recursively, const OutputConnections &ignore_
       return true;
     } else if (recursively && connected->OutputsTo(n, recursively, ignore_edges, added_edge)) {
       return true;
-    } else if (added_edge.first.node() == this) {
+    } else if (added_edge.first == this) {
       Node *proposed_connected = added_edge.second.node();
 
       if (proposed_connected == n) {
@@ -1694,11 +1740,11 @@ bool Node::OutputsTo(const NodeInput &input, bool recursively) const
 bool Node::InputsFrom(Node *n, bool recursively) const
 {
   for (auto it=input_connections_.cbegin(); it!=input_connections_.cend(); it++) {
-    const NodeOutput& connected = it->second;
+    Node *connected = it->second;
 
-    if (connected.node() == n) {
+    if (connected == n) {
       return true;
-    } else if (recursively && connected.node()->InputsFrom(n, recursively)) {
+    } else if (recursively && connected->InputsFrom(n, recursively)) {
       return true;
     }
   }
@@ -1709,11 +1755,11 @@ bool Node::InputsFrom(Node *n, bool recursively) const
 bool Node::InputsFrom(const QString &id, bool recursively) const
 {
   for (auto it=input_connections_.cbegin(); it!=input_connections_.cend(); it++) {
-    const NodeOutput& connected = it->second;
+    Node *connected = it->second;
 
-    if (connected.node()->id() == id) {
+    if (connected->id() == id) {
       return true;
-    } else if (recursively && connected.node()->InputsFrom(id, recursively)) {
+    } else if (recursively && connected->InputsFrom(id, recursively)) {
       return true;
     }
   }
@@ -1800,7 +1846,7 @@ QVector<TimeRange> Node::TransformTimeTo(const TimeRange &time, Node *target, bo
     // If this input is connected, traverse it to see if we stumble across the specified `node`
     for (auto it=input_connections_.cbegin(); it!=input_connections_.cend(); it++) {
       TimeRange input_adjustment = InputTimeAdjustment(it->first.input(), it->first.element(), time);
-      Node* connected = it->second.node();
+      Node* connected = it->second;
 
       if (connected == target) {
         // We found the target, no need to keep traversing
@@ -2113,29 +2159,27 @@ void Node::InputValueChangedEvent(const QString &input, int element)
   Q_UNUSED(element)
 }
 
-void Node::InputConnectedEvent(const QString &input, int element, const NodeOutput &output)
+void Node::InputConnectedEvent(const QString &input, int element, Node *output)
 {
   Q_UNUSED(input)
   Q_UNUSED(element)
   Q_UNUSED(output)
 }
 
-void Node::InputDisconnectedEvent(const QString &input, int element, const NodeOutput &output)
+void Node::InputDisconnectedEvent(const QString &input, int element, Node *output)
 {
   Q_UNUSED(input)
   Q_UNUSED(element)
   Q_UNUSED(output)
 }
 
-void Node::OutputConnectedEvent(const QString &output, const NodeInput &input)
+void Node::OutputConnectedEvent(const NodeInput &input)
 {
-  Q_UNUSED(output)
   Q_UNUSED(input)
 }
 
-void Node::OutputDisconnectedEvent(const QString &output, const NodeInput &input)
+void Node::OutputDisconnectedEvent(const NodeInput &input)
 {
-  Q_UNUSED(output)
   Q_UNUSED(input)
 }
 
@@ -2352,7 +2396,7 @@ void NodeSetPositionAsChildCommand::redo()
     }
   }
 
-  sub_command_->redo();
+  sub_command_->redo_now();
 }
 
 void NodeSetPositionToOffsetOfAnotherNodeCommand::redo()
@@ -2414,6 +2458,52 @@ void NodeRemovePositionFromAllContextsCommand::undo()
   for (auto it=points_.crbegin(); it!=points_.crend(); it++) {
     graph->SetNodePosition(node_, it->first, it->second);
   }
+}
+
+void Node::ValueHint::Hash(QCryptographicHash &hash) const
+{
+  // Add value hint
+  if (!types().isEmpty()) {
+    hash.addData(reinterpret_cast<const char*>(types().constData()), sizeof(NodeValue::Type) * types().size());
+  }
+  hash.addData(reinterpret_cast<const char*>(&index()), sizeof(index()));
+  hash.addData(tag().toUtf8());
+}
+
+void Node::ValueHint::Load(QXmlStreamReader *reader)
+{
+  while (XMLReadNextStartElement(reader)) {
+    if (reader->name() == QStringLiteral("types")) {
+      while (XMLReadNextStartElement(reader)) {
+        if (reader->name() == QStringLiteral("type")) {
+          type_.append(static_cast<NodeValue::Type>(reader->readElementText().toInt()));
+        } else {
+          reader->skipCurrentElement();
+        }
+      }
+    } else if (reader->name() == QStringLiteral("index")) {
+      index_ = reader->readElementText().toInt();
+    } else if (reader->name() == QStringLiteral("tag")) {
+      tag_ = reader->readElementText();
+    } else {
+      reader->skipCurrentElement();
+    }
+  }
+}
+
+void Node::ValueHint::Save(QXmlStreamWriter *writer) const
+{
+  writer->writeStartElement(QStringLiteral("types"));
+
+  for (auto it=type_.cbegin(); it!=type_.cend(); it++) {
+    writer->writeTextElement(QStringLiteral("type"), QString::number(*it));
+  }
+
+  writer->writeEndElement(); // types
+
+  writer->writeTextElement(QStringLiteral("index"), QString::number(index_));
+
+  writer->writeTextElement(QStringLiteral("tag"), tag_);
 }
 
 }

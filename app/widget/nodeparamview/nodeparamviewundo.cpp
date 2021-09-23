@@ -201,4 +201,15 @@ void NodeParamArrayAppendCommand::undo()
   node_->InputArrayRemoveLast(input_, false);
 }
 
+void NodeSetValueHintCommand::redo()
+{
+  old_hint_ = input_.node()->GetValueHintForInput(input_.input(), input_.element());
+  input_.node()->SetValueHintForInput(input_.input(), new_hint_, input_.element());
+}
+
+void NodeSetValueHintCommand::undo()
+{
+  input_.node()->SetValueHintForInput(input_.input(), old_hint_, input_.element());
+}
+
 }

@@ -26,10 +26,7 @@
 
 namespace olive {
 
-RenderTask::RenderTask(ViewerOutput *viewer, const VideoParams &vparams, const AudioParams &aparams) :
-  viewer_(viewer),
-  video_params_(vparams),
-  audio_params_(aparams),
+RenderTask::RenderTask() :
   running_tickets_(0),
   native_progress_signalling_(true)
 {
@@ -80,7 +77,7 @@ bool RenderTask::Render(ColorManager* manager,
   QMap<QByteArray, QVector<rational> > time_map;
   QVector<QPair<rational, QByteArray> > frame_render_order;
 
-  if (!video_range.isEmpty()) {
+  if (!video_range.isEmpty() && viewer()->GetConnectedTextureOutput()) {
     // Get list of discrete frames from range
     TimeRangeListFrameIterator iterator(video_range, video_params().frame_rate_as_time_base());
     QVector<rational> times(iterator.size());
@@ -94,7 +91,7 @@ bool RenderTask::Render(ColorManager* manager,
       }
 
       times[i] = r;
-      hashes[i] = RenderManager::instance()->Hash(viewer()->GetConnectedTextureOutput(), video_params_, r);
+      hashes[i] = RenderManager::instance()->Hash(viewer()->GetConnectedTextureOutput(), viewer()->GetConnectedTextureValueHint(), video_params_, r);
     }
 
     // Filter out duplicates

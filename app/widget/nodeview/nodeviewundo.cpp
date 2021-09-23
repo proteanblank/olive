@@ -24,7 +24,7 @@
 
 namespace olive {
 
-NodeEdgeAddCommand::NodeEdgeAddCommand(const NodeOutput &output, const NodeInput &input) :
+NodeEdgeAddCommand::NodeEdgeAddCommand(Node *output, const NodeInput &input) :
   output_(output),
   input_(input),
   remove_command_(nullptr)
@@ -60,10 +60,10 @@ void NodeEdgeAddCommand::undo()
 
 Project *NodeEdgeAddCommand::GetRelevantProject() const
 {
-  return output_.node()->project();
+  return output_->project();
 }
 
-NodeEdgeRemoveCommand::NodeEdgeRemoveCommand(const NodeOutput &output, const NodeInput &input) :
+NodeEdgeRemoveCommand::NodeEdgeRemoveCommand(Node *output, const NodeInput &input) :
   output_(output),
   input_(input)
 {
@@ -81,7 +81,7 @@ void NodeEdgeRemoveCommand::undo()
 
 Project *NodeEdgeRemoveCommand::GetRelevantProject() const
 {
-  return output_.node()->project();
+  return output_->project();
 }
 
 NodeAddCommand::NodeAddCommand(NodeGraph *graph, Node *node) :
@@ -169,6 +169,28 @@ void NodeRenameCommand::undo()
 Project *NodeRenameCommand::GetRelevantProject() const
 {
   return nodes_.isEmpty() ? nullptr : nodes_.first()->project();
+}
+
+NodeOverrideColorCommand::NodeOverrideColorCommand(Node *node, int index) :
+  node_(node),
+  new_index_(index)
+{
+}
+
+Project *NodeOverrideColorCommand::GetRelevantProject() const
+{
+  return node_->project();
+}
+
+void NodeOverrideColorCommand::redo()
+{
+  old_index_ = node_->GetOverrideColor();
+  node_->SetOverrideColor(new_index_);
+}
+
+void NodeOverrideColorCommand::undo()
+{
+  node_->SetOverrideColor(old_index_);
 }
 
 }

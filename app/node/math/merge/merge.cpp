@@ -73,15 +73,10 @@ ShaderCode MergeNode::GetShaderCode(const QString &shader_id) const
   return ShaderCode(FileFunctions::ReadFileAsString(":/shaders/alphaover.frag"));
 }
 
-NodeValueTable MergeNode::Value(const QString &output, NodeValueDatabase &value) const
+void MergeNode::Value(const NodeValueRow &value, const NodeGlobals &globals, NodeValueTable *table) const
 {
-  Q_UNUSED(output)
-
   ShaderJob job;
-  job.InsertValue(this, kBaseIn, value);
-  job.InsertValue(this, kBlendIn, value);
-
-  NodeValueTable table = value.Merge();
+  job.InsertValue(value);
 
   TexturePtr base_tex = job.GetValue(kBaseIn).data().value<TexturePtr>();
   TexturePtr blend_tex = job.GetValue(kBlendIn).data().value<TexturePtr>();
@@ -89,10 +84,10 @@ NodeValueTable MergeNode::Value(const QString &output, NodeValueDatabase &value)
   if (base_tex || blend_tex) {
     if (!base_tex || (blend_tex && blend_tex->channel_count() < VideoParams::kRGBAChannelCount)) {
       // We only have a blend texture or the blend texture is RGB only, no need to alpha over
-      table.Push(job.GetValue(kBlendIn));
+      table->Push(job.GetValue(kBlendIn));
     } else if (!blend_tex) {
       // We only have a base texture, no need to alpha over
-      table.Push(job.GetValue(kBaseIn));
+      table->Push(job.GetValue(kBaseIn));
     } else {
       // We have both textures, push the job
       if (base_tex->channel_count() < VideoParams::kRGBAChannelCount) {
@@ -100,19 +95,17 @@ NodeValueTable MergeNode::Value(const QString &output, NodeValueDatabase &value)
         job.SetAlphaChannelRequired(GenerateJob::kAlphaForceOff);
       }
 
-      table.Push(NodeValue::kShaderJob, QVariant::fromValue(job), this);
+      table->Push(NodeValue::kShaderJob, QVariant::fromValue(job), this);
     }
   }
-
-  return table;
 }
 
-void MergeNode::Hash(const QString &output, QCryptographicHash &hash, const rational &time, const VideoParams &video_params) const
+void MergeNode::Hash(QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams &video_params) const
 {
   NodeTraverser traverser;
   traverser.SetCacheVideoParams(video_params);
 
-  NodeValueDatabase db = traverser.GenerateDatabase(this, output, TimeRange(time, time+video_params.frame_rate_as_time_base()));
+  NodeValueDatabase db = traverser.GenerateDatabase(this, globals.time());
 
   TexturePtr base_tex = db[kBaseIn].Get(NodeValue::kTexture).value<TexturePtr>();
   TexturePtr blend_tex = db[kBlendIn].Get(NodeValue::kTexture).value<TexturePtr>();
@@ -123,17 +116,17 @@ void MergeNode::Hash(const QString &output, QCryptographicHash &hash, const rati
 
     if (!passthrough_base && !passthrough_blend) {
       // This merge will actually do something so we add a fingerprint
-      hash.addData(id().toUtf8());
+      HashAddNodeSignature(hash);
     }
 
     if (!passthrough_base) {
-      NodeOutput blend_output = GetConnectedOutput(kBlendIn);
-      blend_output.node()->Hash(blend_output.output(), hash, time, video_params);
+      Node *blend_output = GetConnectedOutput(kBlendIn);
+      Node::Hash(blend_output, GetValueHintForInput(kBlendIn), hash, globals, video_params);
     }
 
     if (!passthrough_blend) {
-      NodeOutput base_output = GetConnectedOutput(kBaseIn);
-      base_output.node()->Hash(base_output.output(), hash, time, video_params);
+      Node *base_output = GetConnectedOutput(kBaseIn);
+      Node::Hash(base_output, GetValueHintForInput(kBaseIn), hash, globals, video_params);
     }
 
     Q_ASSERT(!passthrough_base || !passthrough_blend);

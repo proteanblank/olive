@@ -25,15 +25,18 @@
 #include <QVector3D>
 #include <QVector4D>
 
+#include "node/block/clip/clip.h"
+#include "node/block/transition/transition.h"
 #include "node/project/project.h"
 #include "rendermanager.h"
 
 namespace olive {
 
-RenderProcessor::RenderProcessor(RenderTicketPtr ticket, Renderer *render_ctx, StillImageCache* still_image_cache, DecoderCache* decoder_cache, ShaderCache *shader_cache, QVariant default_shader) :
+#define super NodeTraverser
+
+RenderProcessor::RenderProcessor(RenderTicketPtr ticket, Renderer *render_ctx, DecoderCache* decoder_cache, ShaderCache *shader_cache, QVariant default_shader) :
   ticket_(ticket),
   render_ctx_(render_ctx),
-  still_image_cache_(still_image_cache),
   decoder_cache_(decoder_cache),
   shader_cache_(shader_cache),
   default_shader_(default_shader)
@@ -45,10 +48,8 @@ TexturePtr RenderProcessor::GenerateTexture(const rational &time, const rational
   ViewerOutput* viewer = Node::ValueToPtr<ViewerOutput>(ticket_->property("viewer"));
 
   NodeValueTable table;
-  NodeOutput texture_output = viewer->GetConnectedTextureOutput();
-  if (texture_output.IsValid()) {
-    table = GenerateTable(texture_output.node(), texture_output.output(),
-                          TimeRange(time, time + frame_length));
+  if (Node *texture_output = viewer->GetConnectedTextureOutput()) {
+    table = GenerateTable(texture_output, viewer->GetValueHintForInput(ViewerOutput::kTextureInput), TimeRange(time, time + frame_length));
   }
 
   return table.Get(NodeValue::kTexture).value<TexturePtr>();
@@ -120,6 +121,8 @@ void RenderProcessor::Run()
   // Depending on the render ticket type, start a job
   RenderManager::TicketType type = ticket_->property("type").value<RenderManager::TicketType>();
 
+  SetCancelPointer(&ticket_->IsCancelled());
+
   switch (type) {
   case RenderManager::kTypeVideo:
   {
@@ -145,7 +148,11 @@ void RenderProcessor::Run()
       texture = render_ctx_->InterlaceTexture(top, bottom, GetCacheVideoParams());
     }
 
-    if (ticket_->property("textureonly").toBool()) {
+    if (ticket_->IsCancelled()) {
+      // Finish cancelled ticket with nothing since we can't guarantee the frame we generated
+      // is actually "complete
+      ticket_->Finish();
+    } else if (ticket_->property("textureonly").toBool()) {
       // Return GPU texture
       if (!texture) {
         texture = render_ctx_->CreateTexture(GetCacheVideoParams());
@@ -168,21 +175,24 @@ void RenderProcessor::Run()
     TimeRange time = ticket_->property("time").value<TimeRange>();
 
     NodeValueTable table;
-    NodeOutput texture_output = viewer->GetConnectedSampleOutput();
-    if (texture_output.IsValid()) {
-      table = GenerateTable(texture_output.node(), texture_output.output(), time);
+    if (Node *texture_output = viewer->GetConnectedSampleOutput()) {
+      table = GenerateTable(texture_output, viewer->GetValueHintForInput(ViewerOutput::kSamplesInput),time);
     }
 
     QVariant sample_variant = table.Get(NodeValue::kSamples);
     SampleBufferPtr samples = sample_variant.value<SampleBufferPtr>();
-    if (samples && ticket_->property("enablewaveforms").toBool()) {
+    if (ticket_->property("enablewaveforms").toBool()) {
       AudioVisualWaveform vis;
       vis.set_channel_count(samples->audio_params().channel_count());
       vis.OverwriteSamples(samples, samples->audio_params().sample_rate());
       ticket_->setProperty("waveform", QVariant::fromValue(vis));
     }
 
-    ticket_->Finish(sample_variant);
+    if (ticket_->IsCancelled()) {
+      ticket_->Finish();
+    } else {
+      ticket_->Finish(sample_variant);
+    }
     break;
   }
   case RenderManager::kTypeVideoDownload:
@@ -230,9 +240,9 @@ DecoderPtr RenderProcessor::ResolveDecoderFromInput(const QString& decoder_id, c
   return decoder.decoder;
 }
 
-void RenderProcessor::Process(RenderTicketPtr ticket, Renderer *render_ctx, StillImageCache *still_image_cache, DecoderCache *decoder_cache, ShaderCache *shader_cache, QVariant default_shader)
+void RenderProcessor::Process(RenderTicketPtr ticket, Renderer *render_ctx, DecoderCache *decoder_cache, ShaderCache *shader_cache, QVariant default_shader)
 {
-  RenderProcessor p(ticket, render_ctx, still_image_cache, decoder_cache, shader_cache, default_shader);
+  RenderProcessor p(ticket, render_ctx, decoder_cache, shader_cache, default_shader);
   p.Run();
 }
 
@@ -253,55 +263,67 @@ NodeValueTable RenderProcessor::GenerateBlockTable(const Track *track, const Tim
 
     // Loop through active blocks retrieving their audio
     foreach (Block* b, active_blocks) {
-      TimeRange range_for_block(qMax(b->in(), range.in()),
-                                qMin(b->out(), range.out()));
+      if (dynamic_cast<ClipBlock*>(b) || dynamic_cast<TransitionBlock*>(b)) {
+        TimeRange range_for_block(qMax(b->in(), range.in()),
+                                  qMin(b->out(), range.out()));
 
-      int destination_offset = audio_params.time_to_samples(range_for_block.in() - range.in());
-      int max_dest_sz = audio_params.time_to_samples(range_for_block.length());
+        int destination_offset = audio_params.time_to_samples(range_for_block.in() - range.in());
+        int max_dest_sz = audio_params.time_to_samples(range_for_block.length());
 
-      // Destination buffer
-      NodeValueTable table = GenerateTable(b, Track::TransformRangeForBlock(b, range_for_block));
-      SampleBufferPtr samples_from_this_block = table.Take(NodeValue::kSamples).value<SampleBufferPtr>();
+        // Destination buffer
+        NodeValueTable table = GenerateTable(b, track->GetValueHintForInput(Track::kBlockInput, track->GetArrayIndexFromBlock(b)),Track::TransformRangeForBlock(b, range_for_block));
+        SampleBufferPtr samples_from_this_block = table.Take(NodeValue::kSamples).value<SampleBufferPtr>();
+        ClipBlock *clip_cast = dynamic_cast<ClipBlock*>(b);
 
-      if (!samples_from_this_block) {
-        // If we retrieved no samples from this block, do nothing
-        continue;
+        if (samples_from_this_block) {
+          // If this is a clip, we might have extra speed/reverse information
+          if (clip_cast) {
+            double speed_value = clip_cast->speed();
+            bool reversed = clip_cast->reverse();
+
+            if (qIsNull(speed_value)) {
+              // Just silence, don't think there's any other practical application of 0 speed audio
+              samples_from_this_block->fill(0);
+            } else if (!qFuzzyCompare(speed_value, 1.0)) {
+              // Multiply time
+              samples_from_this_block->speed(speed_value);
+            }
+
+            if (reversed) {
+              samples_from_this_block->reverse();
+            }
+          }
+
+          int copy_length = qMin(max_dest_sz, samples_from_this_block->sample_count());
+
+          // Copy samples into destination buffer
+          for (int i=0; i<samples_from_this_block->audio_params().channel_count(); i++) {
+            block_range_buffer->set(i, samples_from_this_block->data(i), destination_offset, copy_length);
+          }
+
+          NodeValueTable::Merge({merged_table, table});
+        }
+
+        // Create block waveforms if requested
+        if (ticket_->property("enablewaveforms").toBool() && clip_cast) {
+          // Format information for use in the main thread
+          RenderedWaveform waveform_info;
+          waveform_info.block = clip_cast;
+          waveform_info.range = range_for_block - b->in();
+
+          if (!(waveform_info.silence = !samples_from_this_block.get())) {
+            // Generate a visual waveform from the samples acquired from this block
+            AudioVisualWaveform visual_waveform;
+            visual_waveform.set_channel_count(audio_params.channel_count());
+            visual_waveform.OverwriteSamples(samples_from_this_block, audio_params.sample_rate());
+            waveform_info.waveform = visual_waveform;
+          }
+
+          QVector<RenderedWaveform> waveform_list = ticket_->property("waveforms").value< QVector<RenderedWaveform> >();
+          waveform_list.append(waveform_info);
+          ticket_->setProperty("waveforms", QVariant::fromValue(waveform_list));
+        }
       }
-
-      double speed_value = b->GetStandardValue(Block::kSpeedInput).toDouble();
-
-      if (qIsNull(speed_value)) {
-        // Just silence, don't think there's any other practical application of 0 speed audio
-        samples_from_this_block->fill(0);
-      } else if (!qFuzzyCompare(speed_value, 1.0)) {
-        // Multiply time
-        samples_from_this_block->speed(speed_value);
-      }
-
-      if (b->GetStandardValue(Block::kReverseInput).toBool()) {
-        samples_from_this_block->reverse();
-      }
-
-      int copy_length = qMin(max_dest_sz, samples_from_this_block->sample_count());
-
-      // Copy samples into destination buffer
-      for (int i=0; i<samples_from_this_block->audio_params().channel_count(); i++) {
-        block_range_buffer->set(i, samples_from_this_block->data(i), destination_offset, copy_length);
-      }
-
-      NodeValueTable::Merge({merged_table, table});
-    }
-
-    if (ticket_->property("enablewaveforms").toBool()) {
-      // Generate a visual waveform and send it back to the main thread
-      AudioVisualWaveform visual_waveform;
-      visual_waveform.set_channel_count(audio_params.channel_count());
-      visual_waveform.OverwriteSamples(block_range_buffer, audio_params.sample_rate());
-
-      RenderedWaveform waveform_info = {track, visual_waveform, range};
-      QVector<RenderedWaveform> waveform_list = ticket_->property("waveforms").value< QVector<RenderedWaveform> >();
-      waveform_list.append(waveform_info);
-      ticket_->setProperty("waveforms", QVariant::fromValue(waveform_list));
     }
 
     merged_table.Push(NodeValue::kSamples, QVariant::fromValue(block_range_buffer), track);
@@ -309,18 +331,16 @@ NodeValueTable RenderProcessor::GenerateBlockTable(const Track *track, const Tim
     return merged_table;
 
   } else {
-    return NodeTraverser::GenerateBlockTable(track, range);
+    return super::GenerateBlockTable(track, range);
   }
 }
 
-QVariant RenderProcessor::ProcessVideoFootage(const FootageJob &stream, const rational &input_time)
+TexturePtr RenderProcessor::ProcessVideoFootage(const FootageJob &stream, const rational &input_time)
 {
   if (ticket_->property("type").value<RenderManager::TicketType>() != RenderManager::kTypeVideo) {
     // Video cannot contribute to audio, so we do nothing here
-    return QVariant();
+    return super::ProcessVideoFootage(stream, input_time);
   }
-
-  TexturePtr value = nullptr;
 
   // Check the still frame cache. On large frames such as high resolution still images, uploading
   // and color managing them for every frame is a waste of time, so we implement a small cache here
@@ -347,79 +367,37 @@ QVariant RenderProcessor::ProcessVideoFootage(const FootageJob &stream, const ra
 
   Decoder::CodecStream default_codec_stream(stream.filename(), stream_data.stream_index());
 
-  StillImageCache::EntryPtr want_entry = std::make_shared<StillImageCache::Entry>(
-        nullptr,
-        default_codec_stream,
-        ColorProcessor::GenerateID(color_manager, using_colorspace, color_manager->GetReferenceColorSpace()),
-        stream_data.premultiplied_alpha(),
-        footage_divider,
-        (stream_data.video_type() == VideoParams::kVideoTypeStill) ? 0 : input_time,
-        true);
+  QString decoder_id = stream.decoder();
 
-  bool found_existing = false;
+  DecoderPtr decoder = nullptr;
 
-  still_image_cache_->mutex()->lock();
+  if (stream_data.video_type() == VideoParams::kVideoTypeVideo) {
+    decoder = ResolveDecoderFromInput(decoder_id, default_codec_stream);
+  } else {
+    // Since image sequences involve multiple files, we don't engage the decoder cache
+    decoder = Decoder::CreateFromID(decoder_id);
 
-  foreach (StillImageCache::EntryPtr e, still_image_cache_->entries()) {
-    if (StillImageCache::CompareEntryMetadata(want_entry, e)) {
-      // Found an exact match of the texture we want in the cache. See if it's working or if it's
-      // ready.
-      want_entry = e;
-      found_existing = true;
+    QString frame_filename;
 
-      while (want_entry->working) {
-        still_image_cache_->wait_cond()->wait(still_image_cache_->mutex());
-      }
-
-      value = want_entry->texture;
-      break;
+    if (stream_data.video_type() == VideoParams::kVideoTypeImageSequence) {
+      int64_t frame_number = stream_data.get_time_in_timebase_units(input_time);
+      frame_filename = Decoder::TransformImageSequenceFileName(stream.filename(), frame_number);
+    } else {
+      frame_filename = stream.filename();
     }
+
+    // Decoder will close automatically since it's a stream_ptr
+    decoder->Open(Decoder::CodecStream(frame_filename, stream_data.stream_index()));
   }
 
-  if (value) {
-    // Found the texture, we can release the cache now
-    still_image_cache_->mutex()->unlock();
-  } else {
-    // Wasn't in still image cache, so we'll have to retrieve it from the decoder
+  if (decoder) {
+    Decoder::RetrieveVideoParams p;
+    p.divider = footage_divider;
+    p.src_interlacing = stream_data.interlacing();
+    p.dst_interlacing = GetCacheVideoParams().interlacing();
 
-    // Let other processors know we're getting this texture (want_entry's `working` field is
-    // already set to true in the initializer above)
-    if (!found_existing) {
-      still_image_cache_->PushEntry(want_entry);
-    }
-
-    still_image_cache_->mutex()->unlock();
-
-    QString decoder_id = stream.decoder();
-
-    DecoderPtr decoder = nullptr;
-
-    if (stream_data.video_type() == VideoParams::kVideoTypeVideo) {
-      decoder = ResolveDecoderFromInput(decoder_id, default_codec_stream);
-    } else {
-      // Since image sequences involve multiple files, we don't engage the decoder cache
-      decoder = Decoder::CreateFromID(decoder_id);
-
-      QString frame_filename;
-
-      if (stream_data.video_type() == VideoParams::kVideoTypeImageSequence) {
-        int64_t frame_number = stream_data.get_time_in_timebase_units(input_time);
-        frame_filename = Decoder::TransformImageSequenceFileName(stream.filename(), frame_number);
-      } else {
-        frame_filename = stream.filename();
-      }
-
-      // Decoder will close automatically since it's a stream_ptr
-      decoder->Open(Decoder::CodecStream(frame_filename, stream_data.stream_index()));
-    }
-
-    if (decoder) {
-      Decoder::RetrieveVideoParams p;
-      p.divider = footage_divider;
-      p.src_interlacing = stream_data.interlacing();
-      p.dst_interlacing = GetCacheVideoParams().interlacing();
-
-      FramePtr frame = decoder->RetrieveVideo((stream_data.video_type() == VideoParams::kVideoTypeVideo) ? input_time : Decoder::kAnyTimecode, p);
+    if (!IsCancelled()) {
+      FramePtr frame = decoder->RetrieveVideo((stream_data.video_type() == VideoParams::kVideoTypeVideo) ? input_time : Decoder::kAnyTimecode, p, GetCancelPointer());
 
       if (frame) {
         // Return a texture from the derived class
@@ -433,7 +411,7 @@ QVariant RenderProcessor::ProcessVideoFootage(const FootageJob &stream, const ra
         managed_params.set_format(render_params.format());
         managed_params.set_pixel_aspect_ratio(stream_data.pixel_aspect_ratio());
         managed_params.set_interlacing(stream_data.interlacing());
-        value = render_ctx_->CreateTexture(managed_params);
+        TexturePtr value = render_ctx_->CreateTexture(managed_params);
 
         ColorProcessorPtr processor = ColorProcessor::Create(color_manager,
                                                              using_colorspace,
@@ -453,26 +431,16 @@ QVariant RenderProcessor::ProcessVideoFootage(const FootageJob &stream, const ra
                                       alpha_assoc,
                                       value.get());
 
-        still_image_cache_->mutex()->lock();
-
-        // Put this into the image cache instead
-        want_entry->texture = value;
-        want_entry->working = false;
-
-        still_image_cache_->wait_cond()->wakeAll();
-
-        still_image_cache_->mutex()->unlock();
+        return value;
       }
     }
   }
 
-  return QVariant::fromValue(value);
+  return super::ProcessVideoFootage(stream, input_time);
 }
 
-QVariant RenderProcessor::ProcessAudioFootage(const FootageJob &stream, const TimeRange &input_time)
+SampleBufferPtr RenderProcessor::ProcessAudioFootage(const FootageJob &stream, const TimeRange &input_time)
 {
-  QVariant value;
-
   DecoderPtr decoder = ResolveDecoderFromInput(stream.decoder(), Decoder::CodecStream(stream.filename(), stream.audio_params().stream_index()));
 
   if (decoder) {
@@ -484,16 +452,16 @@ QVariant RenderProcessor::ProcessAudioFootage(const FootageJob &stream, const Ti
                                                                static_cast<RenderMode::Mode>(ticket_->property("mode").toInt()));
 
     if (status.status == Decoder::kOK && status.samples) {
-      value = QVariant::fromValue(status.samples);
+      return status.samples;
     } else if (status.status == Decoder::kWaitingForConform) {
       ticket_->setProperty("incomplete", true);
     }
   }
 
-  return value;
+  return super::ProcessAudioFootage(stream, input_time);
 }
 
-QVariant RenderProcessor::ProcessShader(const Node *node, const TimeRange &range, const ShaderJob &job)
+TexturePtr RenderProcessor::ProcessShader(const Node *node, const TimeRange &range, const ShaderJob &job)
 {
   Q_UNUSED(range)
 
@@ -509,7 +477,7 @@ QVariant RenderProcessor::ProcessShader(const Node *node, const TimeRange &range
 
     if (shader.isNull()) {
       // Couldn't find or build the shader required
-      return QVariant();
+      return super::ProcessShader(node, range, job);
     }
   }
 
@@ -522,17 +490,17 @@ QVariant RenderProcessor::ProcessShader(const Node *node, const TimeRange &range
   // Run shader
   render_ctx_->BlitToTexture(shader, job, destination.get());
 
-  return QVariant::fromValue(destination);
+  return destination;
 }
 
-QVariant RenderProcessor::ProcessSamples(const Node *node, const TimeRange &range, const SampleJob &job)
+SampleBufferPtr RenderProcessor::ProcessSamples(const Node *node, const TimeRange &range, const SampleJob &job)
 {
   if (!job.samples() || !job.samples()->is_allocated()) {
-    return QVariant();
+    super::ProcessSamples(node, range, job);
   }
 
   SampleBufferPtr output_buffer = SampleBuffer::CreateAllocated(job.samples()->audio_params(), job.samples()->sample_count());
-  NodeValueDatabase value_db;
+  NodeValueRow value_db;
 
   const AudioParams& audio_params = ticket_->property("aparam").value<AudioParams>();
 
@@ -546,10 +514,8 @@ QVariant RenderProcessor::ProcessSamples(const Node *node, const TimeRange &rang
     for (auto j=job.GetValues().constBegin(); j!=job.GetValues().constEnd(); j++) {
       NodeValueTable value = ProcessInput(node, j.key(), TimeRange(this_sample_time, this_sample_time));
 
-      value_db.Insert(j.key(), value);
+      value_db.insert(j.key(), GenerateRowValue(node, j.key(), &value));
     }
-
-    AddGlobalsToDatabase(value_db, TimeRange(this_sample_time, this_sample_time));
 
     node->ProcessSamples(value_db,
                          job.samples(),
@@ -557,10 +523,10 @@ QVariant RenderProcessor::ProcessSamples(const Node *node, const TimeRange &rang
                          i);
   }
 
-  return QVariant::fromValue(output_buffer);
+  return output_buffer;
 }
 
-QVariant RenderProcessor::ProcessFrameGeneration(const Node *node, const GenerateJob &job)
+TexturePtr RenderProcessor::ProcessFrameGeneration(const Node *node, const GenerateJob &job)
 {
   FramePtr frame = Frame::Create();
 
@@ -575,7 +541,7 @@ QVariant RenderProcessor::ProcessFrameGeneration(const Node *node, const Generat
                                                   frame->data(),
                                                   frame->linesize_pixels());
 
-  return QVariant::fromValue(texture);
+  return texture;
 }
 
 bool RenderProcessor::CanCacheFrames()
@@ -583,24 +549,24 @@ bool RenderProcessor::CanCacheFrames()
   return ticket_->property("type").value<RenderManager::TicketType>() == RenderManager::kTypeVideo;
 }
 
-QVariant RenderProcessor::GetCachedTexture(const QByteArray& hash)
+TexturePtr RenderProcessor::GetCachedTexture(const QByteArray& hash)
 {
   QString cache_dir = ticket_->property("cache").toString();
   if (cache_dir.isEmpty()) {
-    return QVariant();
+    return nullptr;
   }
 
   FramePtr f = FrameHashCache::LoadCacheFrame(cache_dir, hash);
 
   if (f) {
     TexturePtr texture = render_ctx_->CreateTexture(f->video_params(), f->data(), f->linesize_pixels());
-    return QVariant::fromValue(texture);
+    return texture;
   }
 
-  return QVariant();
+  return nullptr;
 }
 
-void RenderProcessor::SaveCachedTexture(const QByteArray &hash, const QVariant &tex_var)
+void RenderProcessor::SaveCachedTexture(const QByteArray &hash, TexturePtr tex_var)
 {
   // FIXME: Temporarily disabled because I don't know how to ensure that the frame saved here is
   //        not the main frame. If it is, it'll be saved twice which will waste a lot of cycles.

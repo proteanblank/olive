@@ -31,18 +31,29 @@
 
 namespace olive {
 
-class NodeTraverser : public CancelableObject
+class NodeTraverser
 {
 public:
-  NodeTraverser() = default;
+  NodeTraverser();
 
-  NodeValueTable GenerateTable(const Node *n, const QString &output, const TimeRange &range);
-  NodeValueTable GenerateTable(const NodeOutput& output, const TimeRange &range)
+  NodeValueTable GenerateTable(const Node *n, const Node::ValueHint &hint, const TimeRange &range);
+
+  NodeValueDatabase GenerateDatabase(const Node *node, const TimeRange &range);
+
+  NodeValueRow GenerateRow(NodeValueDatabase *database, const Node *node, const TimeRange &range);
+  NodeValueRow GenerateRow(const Node *node, const TimeRange &range);
+
+  NodeValue GenerateRowValue(const Node *node, const QString &input, NodeValueTable *table);
+  NodeValue GenerateRowValueElement(const Node *node, const QString &input, int element, NodeValueTable *table);
+  NodeValue GenerateRowValueElement(const Node::ValueHint &hint, NodeValue::Type preferred_type, NodeValueTable *table);
+  int GenerateRowValueElementIndex(const Node::ValueHint &hint, NodeValue::Type preferred_type, const NodeValueTable *table);
+  int GenerateRowValueElementIndex(const Node *node, const QString &input, int element, const NodeValueTable *table);
+
+  static NodeGlobals GenerateGlobals(const VideoParams &params, const TimeRange &time);
+  static NodeGlobals GenerateGlobals(const VideoParams &params, const rational &time)
   {
-    return GenerateTable(output.node(), output.output(), range);
+    return GenerateGlobals(params, TimeRange(time, time + params.frame_rate_as_time_base()));
   }
-
-  NodeValueDatabase GenerateDatabase(const Node *node, const QString &output, const TimeRange &range);
 
   const VideoParams& GetCacheVideoParams() const
   {
@@ -61,33 +72,48 @@ protected:
 
   virtual NodeValueTable GenerateBlockTable(const Track *track, const TimeRange& range);
 
-  virtual QVariant ProcessVideoFootage(const FootageJob &stream, const rational &input_time);
+  virtual TexturePtr ProcessVideoFootage(const FootageJob &stream, const rational &input_time);
 
-  virtual QVariant ProcessAudioFootage(const FootageJob &stream, const TimeRange &input_time);
+  virtual SampleBufferPtr ProcessAudioFootage(const FootageJob &stream, const TimeRange &input_time);
 
-  virtual QVariant ProcessShader(const Node *node, const TimeRange &range, const ShaderJob& job);
+  virtual TexturePtr ProcessShader(const Node *node, const TimeRange &range, const ShaderJob& job);
 
-  virtual QVariant ProcessSamples(const Node *node, const TimeRange &range, const SampleJob &job);
+  virtual SampleBufferPtr ProcessSamples(const Node *node, const TimeRange &range, const SampleJob &job);
 
-  virtual QVariant ProcessFrameGeneration(const Node *node, const GenerateJob& job);
+  virtual TexturePtr ProcessFrameGeneration(const Node *node, const GenerateJob& job);
 
-  virtual QVariant GetCachedTexture(const QByteArray& hash);
+  virtual TexturePtr GetCachedTexture(const QByteArray& hash);
 
-  virtual void SaveCachedTexture(const QByteArray& hash, const QVariant& texture);
+  virtual void SaveCachedTexture(const QByteArray& hash, TexturePtr texture);
 
   virtual bool CanCacheFrames()
   {
     return false;
   }
 
-  void AddGlobalsToDatabase(NodeValueDatabase& db, const TimeRange &range) const;
-
   QVector2D GenerateResolution() const;
 
+  bool IsCancelled() const
+  {
+    return cancel_ && *cancel_;
+  }
+
+  const QAtomicInt *GetCancelPointer() const
+  {
+    return cancel_;
+  }
+
+  void SetCancelPointer(const QAtomicInt *cancel)
+  {
+    cancel_ = cancel;
+  }
+
 private:
-  void PostProcessTable(const Node *node, const QString &output, const TimeRange &range, NodeValueTable &output_params);
+  void PostProcessTable(const Node *node, const Node::ValueHint &hint, const TimeRange &range, NodeValueTable &output_params);
 
   VideoParams video_params_;
+
+  const QAtomicInt *cancel_;
 
 };
 

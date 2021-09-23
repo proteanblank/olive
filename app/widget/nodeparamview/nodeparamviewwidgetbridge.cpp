@@ -198,9 +198,9 @@ void NodeParamViewWidgetBridge::SetInputValue(const QVariant &value, int track)
 
 void NodeParamViewWidgetBridge::SetInputValueInternal(const QVariant &value, int track, MultiUndoCommand *command, bool insert_on_all_tracks_if_no_key)
 {
-  rational node_time = GetCurrentTimeAsNodeTime();
-
   if (input_.IsKeyframing()) {
+    rational node_time = GetCurrentTimeAsNodeTime();
+
     NodeKeyframe* existing_key = input_.GetKeyframeAtTimeOnTrack(node_time, track);
 
     if (existing_key) {
@@ -236,14 +236,14 @@ void NodeParamViewWidgetBridge::SetInputValueInternal(const QVariant &value, int
 
 void NodeParamViewWidgetBridge::ProcessSlider(NumericSliderBase *slider, const QVariant &value)
 {
-  rational node_time = GetCurrentTimeAsNodeTime();
-
   int slider_track = widgets_.indexOf(slider);
 
   if (slider->IsDragging()) {
 
     // While we're dragging, we block the input's normal signalling and create our own
     if (!dragger_.IsStarted()) {
+      rational node_time = GetCurrentTimeAsNodeTime();
+
       dragger_.Start(NodeKeyframeTrackReference(input_, slider_track), node_time);
     }
 
@@ -253,7 +253,10 @@ void NodeParamViewWidgetBridge::ProcessSlider(NumericSliderBase *slider, const Q
 
     // We were dragging and just stopped
     dragger_.Drag(value);
-    dragger_.End();
+
+    MultiUndoCommand *command = new MultiUndoCommand();
+    dragger_.End(command);
+    Core::instance()->undo_stack()->push(command);
 
   } else {
 
@@ -404,7 +407,6 @@ void NodeParamViewWidgetBridge::CreateSliders(int count)
     T* fs = new T();
     fs->SliderBase::SetDefaultValue(input_.GetSplitDefaultValueForTrack(i));
     fs->SetLadderElementCount(2);
-    fs->SetIsEffectsSlider(true);
     widgets_.append(fs);
     connect(fs, &T::ValueChanged, this, &NodeParamViewWidgetBridge::WidgetCallback);
   }
@@ -416,7 +418,10 @@ void NodeParamViewWidgetBridge::UpdateWidgetValues()
     return;
   }
 
-  rational node_time = GetCurrentTimeAsNodeTime();
+  rational node_time;
+  if (input_.IsKeyframing()) {
+    node_time = GetCurrentTimeAsNodeTime();
+  }
 
   // We assume the first data type is the "primary" type
   switch (input_.GetDataType()) {
@@ -514,7 +519,17 @@ void NodeParamViewWidgetBridge::UpdateWidgetValues()
   {
     QComboBox* cb = static_cast<QComboBox*>(widgets_.first());
     cb->blockSignals(true);
-    cb->setCurrentIndex(input_.GetValueAtTime(node_time).toInt());
+    int index = input_.GetValueAtTime(node_time).toInt();
+    int real_row = -1;
+    for (int i=0; i<cb->count(); i++) {
+      if (!cb->itemText(i).isEmpty()) {
+        real_row++;
+      }
+
+      if (real_row == index) {
+        cb->setCurrentIndex(i);
+      }
+    }
     cb->blockSignals(false);
     break;
   }

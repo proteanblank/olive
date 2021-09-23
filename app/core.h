@@ -330,6 +330,11 @@ public slots:
   bool SaveAllProjects();
 
   /**
+   * @brief Revert project to last saved state (basically close and open it)
+   */
+  void RevertActiveProject();
+
+  /**
    * @brief Closes the active project
    *
    * If no other projects are open, a new one is created automatically.
@@ -436,6 +441,11 @@ signals:
   void ToolChanged(const Tool::Item& tool);
 
   /**
+   * @brief Signal emitted when addable object changes through SetSelectedAddableObject
+   */
+  void AddableObjectChanged(Tool::AddableObject o);
+
+  /**
    * @brief Signal emitted when the snapping setting is changed
    */
   void SnappingChanged(const bool& b);
@@ -505,6 +515,8 @@ private:
   static QString GetAutoRecoveryIndexFilename();
 
   void SaveUnrecoveredList();
+
+  bool RevertProjectInternal(Project *p, bool by_opening_existing);
 
   /**
    * @brief Internal main window object

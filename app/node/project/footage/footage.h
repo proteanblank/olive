@@ -84,8 +84,6 @@ public:
 
   virtual void Retranslate() override;
 
-  virtual QVector<QString> inputs_for_output(const QString &output) const override;
-
   /**
    * @brief Reset Footage state ready for running through Probe() again
    *
@@ -181,17 +179,18 @@ public:
   static QString DescribeVideoStream(const VideoParams& params);
   static QString DescribeAudioStream(const AudioParams& params);
 
-  virtual void Hash(const QString& output, QCryptographicHash &hash, const rational &time, const VideoParams& video_params) const override;
-
-  virtual NodeValueTable Value(const QString &output, NodeValueDatabase& value) const override;
+  virtual void Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const override;
 
   static QString GetStreamTypeName(Track::Type type);
 
-  virtual NodeOutput GetConnectedTextureOutput() override;
+  virtual Node *GetConnectedTextureOutput() override;
 
-  virtual NodeOutput GetConnectedSampleOutput() override;
+  virtual Node *GetConnectedSampleOutput() override;
 
   static rational AdjustTimeByLoopMode(rational time, LoopMode loop_mode, const rational& length, VideoParams::Type type, const rational &timebase);
+
+  virtual qint64 creation_time() const override;
+  virtual qint64 mod_time() const override;
 
   static const QString kFilenameInput;
   static const QString kLoopModeInput;
@@ -210,6 +209,8 @@ protected:
   virtual void InputValueChangedEvent(const QString &input, int element) override;
 
   virtual rational VerifyLengthInternal(Track::Type type) const override;
+
+  virtual void Hash(QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams& video_params) const override;
 
 private:
   QString GetColorspaceToUse(const VideoParams& params) const;

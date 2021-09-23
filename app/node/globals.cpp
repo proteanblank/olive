@@ -18,51 +18,8 @@
 
 ***/
 
-#ifndef WAVEAUDIO_H
-#define WAVEAUDIO_H
-
-#include <QByteArray>
-#include <QFile>
-
-#include "render/audioparams.h"
+#include "globals.h"
 
 namespace olive {
 
-class WaveOutput
-{
-public:
-  WaveOutput(const QString& f,
-             const AudioParams& params);
-
-  ~WaveOutput();
-
-  DISABLE_COPY_MOVE(WaveOutput)
-
-  bool open();
-
-  void write(const QByteArray& bytes);
-  void write(const char* bytes, int length);
-
-  void close();
-
-  const int& data_length() const;
-
-  const AudioParams& params() const;
-
-private:
-  template<typename T>
-  void write_int(QFile* file, T integer);
-
-  void switch_endianness(QByteArray &array);
-
-  QFile file_;
-
-  AudioParams params_;
-
-  int data_length_;
-
-};
-
 }
-
-#endif // WAVEAUDIO_H

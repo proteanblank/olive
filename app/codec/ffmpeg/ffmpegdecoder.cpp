@@ -38,7 +38,6 @@ extern "C" {
 #include <QThread>
 #include <QtConcurrent/QtConcurrent>
 
-#include "codec/waveinput.h"
 #include "common/define.h"
 #include "common/ffmpegutils.h"
 #include "common/filefunctions.h"
@@ -146,7 +145,7 @@ bool FFmpegDecoder::OpenInternal()
   return output_frame;
 }*/
 
-FramePtr FFmpegDecoder::RetrieveVideoInternal(const rational &timecode, const RetrieveVideoParams &params)
+FramePtr FFmpegDecoder::RetrieveVideoInternal(const rational &timecode, const RetrieveVideoParams &params, const QAtomicInt *cancelled)
 {
   if (!InitScaler(params)) {
     return nullptr;
@@ -155,7 +154,7 @@ FramePtr FFmpegDecoder::RetrieveVideoInternal(const rational &timecode, const Re
   AVStream* s = instance_.avstream();
 
   // Retrieve frame
-  FFmpegFramePool::ElementPtr return_frame = RetrieveFrame(timecode);
+  FFmpegFramePool::ElementPtr return_frame = RetrieveFrame(timecode, cancelled);
 
   // We found the frame, we'll return a copy
   if (return_frame) {
@@ -465,7 +464,7 @@ bool FFmpegDecoder::ConformAudioInternal(const QString &filename, const AudioPar
 
   swr_init(resampler);
 
-  WaveOutput wave_out(filename, params);
+  QFile wave_out(filename);
 
   AVPacket* pkt = av_packet_alloc();
   AVFrame* frame = av_frame_alloc();
@@ -473,7 +472,16 @@ bool FFmpegDecoder::ConformAudioInternal(const QString &filename, const AudioPar
 
   bool success = false;
 
-  if (wave_out.open()) {
+  int64_t duration = instance_.avstream()->duration;
+  if (duration == 0 || duration == AV_NOPTS_VALUE) {
+    duration = instance_.fmt_ctx()->duration;
+    if (!(duration == 0 || duration == AV_NOPTS_VALUE)) {
+      // Rescale from AVFormatContext timebase to AVStream timebase
+      duration = av_rescale_q_rnd(duration, {1, AV_TIME_BASE}, instance_.avstream()->time_base, AV_ROUND_UP);
+    }
+  }
+
+  if (wave_out.open(QFile::WriteOnly)) {
     while (true) {
       // Check if we have a `cancelled` ptr and its value
       if (cancelled && *cancelled) {
@@ -521,7 +529,7 @@ bool FFmpegDecoder::ConformAudioInternal(const QString &filename, const AudioPar
         delete [] data;
       }
 
-      SignalProcessingProgress(frame->pts, instance_.avstream()->duration);
+      SignalProcessingProgress(frame->pts, duration);
     }
 
     wave_out.close();
@@ -653,7 +661,7 @@ void FFmpegDecoder::ClearFrameCache()
   }
 }
 
-FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time)
+FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time, const QAtomicInt *cancelled)
 {
   int64_t target_ts = GetTimeInTimebaseUnits(time, instance_.avstream()->time_base, instance_.avstream()->start_time);
 
@@ -696,6 +704,10 @@ FFmpegFramePool::ElementPtr FFmpegDecoder::RetrieveFrame(const rational& time)
   AVFrame* working_frame = av_frame_alloc();
 
   while (true) {
+    // Break out of loop if we've cancelled
+    if (cancelled && *cancelled) {
+      break;
+    }
 
     // Pull from the decoder
     av_frame_unref(working_frame);

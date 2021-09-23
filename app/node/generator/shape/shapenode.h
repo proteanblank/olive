@@ -18,58 +18,41 @@
 
 ***/
 
-#ifndef WAVEINPUT_H
-#define WAVEINPUT_H
+#ifndef SHAPENODE_H
+#define SHAPENODE_H
 
-#include <QFile>
-
-#include "render/audioparams.h"
+#include "shapenodebase.h"
 
 namespace olive {
 
-class WaveInput
+class ShapeNode : public ShapeNodeBase
 {
+  Q_OBJECT
 public:
-  WaveInput(const QString& f);
+  ShapeNode();
 
-  ~WaveInput();
+  enum Type {
+    kRectangle,
+    kEllipse
+  };
 
-  DISABLE_COPY_MOVE(WaveInput)
+  NODE_DEFAULT_DESTRUCTOR(ShapeNode)
+  NODE_COPY_FUNCTION(ShapeNode)
 
-  bool open();
+  virtual QString Name() const override;
+  virtual QString id() const override;
+  virtual QVector<CategoryID> Category() const override;
+  virtual QString Description() const override;
 
-  bool is_open() const;
+  virtual void Retranslate() override;
 
-  QByteArray read(qint64 length);
-  QByteArray read(qint64 offset, qint64 length);
-  qint64 read(qint64 offset, char *buffer, qint64 length);
+  virtual ShaderCode GetShaderCode(const QString& shader_id) const override;
+  virtual void Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const override;
 
-  bool seek(qint64 pos);
+  static QString kTypeInput;
 
-  bool at_end() const;
-
-  const AudioParams& params() const;
-
-  void close();
-
-  const quint32& data_length() const;
-
-  int sample_count() const;
-
-private:
-  bool find_str(QFile* f, const char* str);
-
-  qint64 calculate_max_read() const;
-
-  AudioParams params_;
-
-  QFile file_;
-
-  qint64 data_position_;
-
-  quint32 data_size_;
 };
 
 }
 
-#endif // WAVEINPUT_H
+#endif // SHAPENODE_H

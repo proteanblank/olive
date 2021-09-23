@@ -22,6 +22,7 @@
 #include "core.h"
 #include "node/block/subtitle/subtitle.h"
 #include "node/factory.h"
+#include "node/generator/shape/shapenode.h"
 #include "node/generator/solid/solid.h"
 #include "node/generator/text/text.h"
 #include "widget/timelinewidget/timelinewidget.h"
@@ -51,6 +52,7 @@ void AddTool::MousePress(TimelineViewMouseEvent *event)
   case olive::Tool::kAddableBars:
   case olive::Tool::kAddableSolid:
   case olive::Tool::kAddableTitle:
+  case olive::Tool::kAddableShape:
     add_type = Track::kVideo;
     break;
   case olive::Tool::kAddableTone:
@@ -98,6 +100,10 @@ void AddTool::MouseRelease(TimelineViewMouseEvent *event)
     if (!ghost_->GetAdjustedLength().isNull()) {
       MultiUndoCommand* command = new MultiUndoCommand();
 
+      if (MultiUndoCommand *subtitle_section_command = parent()->TakeSubtitleSectionCommand()) {
+        command->add_child(subtitle_section_command);
+      }
+
       ClipBlock* clip;
       if (Core::instance()->GetSelectedAddableObject() == olive::Tool::kAddableSubtitle) {
         clip = new SubtitleBlock();
@@ -127,6 +133,9 @@ void AddTool::MouseRelease(TimelineViewMouseEvent *event)
         node_to_add = new SolidGenerator();
         break;
       }
+      case olive::Tool::kAddableShape:
+        node_to_add = new ShapeNode();
+        break;
       case olive::Tool::kAddableTitle:
       {
         node_to_add = new TextGenerator();

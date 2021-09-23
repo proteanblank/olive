@@ -35,7 +35,7 @@ namespace olive {
  */
 class NodeEdgeRemoveCommand : public UndoCommand {
 public:
-  NodeEdgeRemoveCommand(const NodeOutput& output, const NodeInput& input);
+  NodeEdgeRemoveCommand(Node *output, const NodeInput& input);
 
   virtual Project* GetRelevantProject() const override;
 
@@ -44,7 +44,7 @@ protected:
   virtual void undo() override;
 
 private:
-  NodeOutput output_;
+  Node *output_;
   NodeInput input_;
 
 };
@@ -56,7 +56,7 @@ private:
  */
 class NodeEdgeAddCommand : public UndoCommand {
 public:
-  NodeEdgeAddCommand(const NodeOutput& output, const NodeInput& input);
+  NodeEdgeAddCommand(Node *output, const NodeInput& input);
 
   virtual ~NodeEdgeAddCommand() override;
 
@@ -67,7 +67,7 @@ protected:
   virtual void undo() override;
 
 private:
-  NodeOutput output_;
+  Node *output_;
   NodeInput input_;
 
   NodeEdgeRemoveCommand* remove_command_;
@@ -117,7 +117,7 @@ protected:
 
   virtual void redo() override
   {
-    command_->redo();
+    command_->redo_now();
 
     graph_ = node_->parent();
     node_->setParent(&memory_manager_);
@@ -128,7 +128,7 @@ protected:
     node_->setParent(graph_);
     graph_ = nullptr;
 
-    command_->undo();
+    command_->undo_now();
   }
 
 private:
@@ -179,12 +179,12 @@ protected:
 
   virtual void redo() override
   {
-    command_->redo();
+    command_->redo_now();
   }
 
   virtual void undo() override
   {
-    command_->undo();
+    command_->undo_now();
   }
 
 private:
@@ -339,6 +339,27 @@ private:
 
   QStringList new_labels_;
   QStringList old_labels_;
+
+};
+
+class NodeOverrideColorCommand : public UndoCommand
+{
+public:
+  NodeOverrideColorCommand(Node *node, int index);
+
+  virtual Project * GetRelevantProject() const override;
+
+protected:
+  virtual void redo() override;
+
+  virtual void undo() override;
+
+private:
+  Node *node_;
+
+  int old_index_;
+
+  int new_index_;
 
 };
 

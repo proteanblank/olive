@@ -75,7 +75,7 @@
 namespace olive {
 
 Core* Core::instance_ = nullptr;
-const uint Core::kProjectVersion = 210528;
+const uint Core::kProjectVersion = 210907;
 
 Core::Core(const CoreParams& params) :
   main_window_(nullptr),
@@ -264,6 +264,7 @@ const QString &Core::GetSelectedTransition() const
 void Core::SetSelectedAddableObject(const Tool::AddableObject &obj)
 {
   addable_object_ = obj;
+  emit AddableObjectChanged(addable_object_);
 }
 
 void Core::SetSelectedTransitionObject(const QString &obj)
@@ -833,6 +834,42 @@ void Core::SaveUnrecoveredList()
   }
 }
 
+bool Core::RevertProjectInternal(Project *p, bool by_opening_existing)
+{
+  if (p->filename().isEmpty()) {
+    QMessageBox::critical(main_window_, tr("Revert"),
+                          tr("This project has not yet been saved, therefore there is no last saved state to revert to."));
+  } else {
+    QString msg;
+
+    if (by_opening_existing) {
+      msg = tr("The project \"%1\" is already open. By re-opening it, the project will revert to "
+               "its last saved state. Any unsaved changes will be lost. Do you wish to continue?").arg(p->filename());
+    } else {
+      msg = tr("This will revert the project \"%1\" back to its last saved state. "
+                                 "All unsaved changes will be lost. Do you wish to continue?").arg(p->name());
+    }
+
+    if (QMessageBox::question(main_window_, tr("Revert"), msg, QMessageBox::Ok | QMessageBox::Cancel) == QMessageBox::Ok) {
+      // Copy filename because CloseProject is going to delete `p`
+      QString filename = p->filename();
+
+      // Close project without prompting to save it
+      CloseProjectBehavior b = kCloseProjectDontSave;
+      CloseProject(p, false, b);
+
+      // NOTE: `p` will be deleted now, so don't try accessing it
+
+      // Re-open project at the filename
+      OpenProjectInternal(filename);
+
+      return true;
+    }
+  }
+
+  return false;
+}
+
 void Core::SaveAutorecovery()
 {
   if (Config::Current()[QStringLiteral("AutorecoveryEnabled")].toBool()) {
@@ -1007,6 +1044,15 @@ bool Core::SaveAllProjects()
   }
 
   return true;
+}
+
+void Core::RevertActiveProject()
+{
+  Project *p = GetActiveProject();
+
+  if (p) {
+    RevertProjectInternal(p, false);
+  }
 }
 
 bool Core::CloseActiveProject()
@@ -1194,9 +1240,18 @@ void Core::OpenProjectInternal(const QString &filename, bool recovery_project)
 {
   // See if this project is open already
   foreach (Project* p, open_projects_) {
-    if (p->filename() == filename) {
+    // Comparing QFileInfos will handle case insensitivity and both slash directions on platforms
+    // where this is necessary (not naming any names *cough* Windows)
+    if (QFileInfo(p->filename()) == QFileInfo(filename)) {
       // This project is already open
-      AddOpenProject(p);
+      bool reverted = RevertProjectInternal(p, true);
+
+      if (!reverted) {
+        // Calling this will focus attention to the project that the user just tried to re-open
+        AddOpenProject(p);
+      }
+
+      // Don't do anything else
       return;
     }
   }

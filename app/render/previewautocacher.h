@@ -65,10 +65,28 @@ public:
    */
   void SetPlayhead(const rational& playhead);
 
-  void ClearHashQueue(bool wait = false);
-  void ClearVideoQueue(bool wait = false);
-  void ClearAudioQueue(bool wait = false);
-  void ClearVideoDownloadQueue(bool wait = false);
+  /**
+   * @brief If any hashes are currently running, wait for them to finish
+   *
+   * Once this function returns, it can be guaranteed that all hash tasks have been finished.
+   * They will NOT have been removed from the hash task list yet until they run HashesProcessed.
+   * If you don't want the continued processing in HashesProcessed to run, remove the task manually
+   * from the list after calling this function. It will still call HashesProcessed, but will be
+   * largely ignored (that function will simply free it).
+   */
+  void WaitForHashesToFinish();
+  void WaitForVideoDownloadsToFinish();
+
+  /**
+   * @brief Call cancel on all currently running video tasks
+   *
+   * Signalling cancel to a video task indicates that we're no longer interested in its end result.
+   * This does not end all video tasks immediately, the RenderManager will do what it can to speed
+   * up finishing the task. The RenderManager will  also return "no result", which can be checked
+   * with watcher->HasResult.
+   */
+  void CancelVideoTasks(bool and_wait_for_them_to_finish = false);
+  void CancelAudioTasks(bool and_wait_for_them_to_finish = false);
 
 private:
   void TryRender();
@@ -83,13 +101,12 @@ private:
    */
   void ProcessUpdateQueue();
 
-  bool HasActiveJobs() const;
-
   void AddNode(Node* node);
   void RemoveNode(Node* node);
-  void AddEdge(const NodeOutput& output, const NodeInput& input);
-  void RemoveEdge(const NodeOutput& output, const NodeInput& input);
+  void AddEdge(Node *output, const NodeInput& input);
+  void RemoveEdge(Node *output, const NodeInput& input);
   void CopyValue(const NodeInput& input);
+  void CopyValueHint(const NodeInput& input);
 
   void InsertIntoCopyMap(Node* node, Node* copy);
 
@@ -98,16 +115,8 @@ private:
 
   void CancelQueuedSingleFrameRender();
 
-  template <typename T, typename Func>
-  void ClearQueueInternal(T& list, bool hard, Func member);
-
-  void ClearQueueRemoveEventInternal(QMap<RenderTicketWatcher*, QByteArray>::iterator it);
-  void ClearQueueRemoveEventInternal(QMap<RenderTicketWatcher*, TimeRange>::iterator it);
-  void ClearQueueRemoveEventInternal(QVector<RenderTicketWatcher*>::iterator it);
-
-  void QueueNextFrameInRange(int max);
-  void QueueNextHashTask();
-  void QueueNextAudioTask();
+  void VideoInvalidatedList(const TimeRangeList &list);
+  void AudioInvalidatedList(const TimeRangeList &list);
 
   struct HashData {
     rational time;
@@ -124,13 +133,14 @@ private:
       kNodeRemoved,
       kEdgeAdded,
       kEdgeRemoved,
-      kValueChanged
+      kValueChanged,
+      kValueHintChanged
     };
 
     Type type;
     Node* node;
     NodeInput input;
-    NodeOutput output;
+    Node *output;
   };
 
   ViewerOutput* viewer_node_;
@@ -146,8 +156,6 @@ private:
   bool paused_;
 
   TimeRange cache_range_;
-
-  bool has_changed_;
 
   bool use_custom_range_;
   TimeRange custom_autocache_range_;
@@ -214,11 +222,13 @@ private slots:
 
   void NodeRemoved(Node* node);
 
-  void EdgeAdded(const NodeOutput& output, const NodeInput& input);
+  void EdgeAdded(Node *output, const NodeInput& input);
 
-  void EdgeRemoved(const NodeOutput& output, const NodeInput& input);
+  void EdgeRemoved(Node *output, const NodeInput& input);
 
   void ValueChanged(const NodeInput& input);
+
+  void ValueHintChanged(const NodeInput &input);
 
   /**
    * @brief Generic function called whenever the frames to render need to be (re)queued

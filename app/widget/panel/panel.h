@@ -124,10 +124,6 @@ public:
 
   virtual void RippleDelete(){}
 
-  virtual void Insert(){}
-
-  virtual void Overwrite(){}
-
   virtual void IncreaseTrackHeight(){}
 
   virtual void DecreaseTrackHeight(){}
@@ -169,6 +165,14 @@ public:
   virtual void Duplicate(){}
 
   virtual void SetColorLabel(int){}
+
+  virtual void NudgeLeft(){}
+
+  virtual void NudgeRight(){}
+
+  virtual void MoveInToPlayhead(){}
+
+  virtual void MoveOutToPlayhead(){}
 
 signals:
   void CloseRequested();

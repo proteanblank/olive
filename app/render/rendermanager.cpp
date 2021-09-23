@@ -26,6 +26,7 @@
 
 #include "config/config.h"
 #include "core.h"
+#include "node/hashtraverser.h"
 #include "render/opengl/openglrenderer.h"
 #include "render/rendererthreadwrapper.h"
 #include "renderprocessor.h"
@@ -53,7 +54,6 @@ RenderManager::RenderManager(QObject *parent) :
     context_->Init();
     context_->PostInit();
 
-    still_cache_ = new StillImageCache();
     decoder_cache_ = new DecoderCache();
     shader_cache_ = new ShaderCache();
     default_shader_ = context_->CreateNativeShader(ShaderCode(QString(), QString()));
@@ -64,7 +64,6 @@ RenderManager::RenderManager(QObject *parent) :
   } else {
     qCritical() << "Tried to initialize unknown graphics backend";
     context_ = nullptr;
-    still_cache_ = nullptr;
     decoder_cache_ = nullptr;
   }
 }
@@ -76,7 +75,6 @@ RenderManager::~RenderManager()
 
     delete shader_cache_;
     delete decoder_cache_;
-    delete still_cache_;
 
     context_->Destroy();
     context_->PostDestroy();
@@ -102,26 +100,17 @@ void RenderManager::ClearOldDecoders()
   }
 }
 
-QByteArray RenderManager::Hash(const Node *n, const QString& output, const VideoParams &params, const rational &time)
+QByteArray RenderManager::Hash(const Node *n, const Node::ValueHint &output, const VideoParams &params, const rational &time)
 {
-  QCryptographicHash hasher(QCryptographicHash::Sha1);
-
-  // Embed video parameters into this hash
-  int width = params.effective_width();
-  int height = params.effective_height();
-  VideoParams::Format format = params.format();
-  VideoParams::Interlacing interlacing = params.interlacing();
-
-  hasher.addData(reinterpret_cast<const char*>(&width), sizeof(width));
-  hasher.addData(reinterpret_cast<const char*>(&height), sizeof(height));
-  hasher.addData(reinterpret_cast<const char*>(&format), sizeof(format));
-  hasher.addData(reinterpret_cast<const char*>(&interlacing), sizeof(interlacing));
+  Q_ASSERT(n);
 
   if (n) {
-    n->Hash(output, hasher, time, params);
+    HashTraverser hasher;
+    return hasher.GetHash(n, output, params, TimeRange(time, time + params.frame_rate_as_time_base()));
+  } else {
+    qCritical() << "Hash called with null node";
+    return QByteArray();
   }
-
-  return hasher.result();
 }
 
 RenderTicketPtr RenderManager::RenderFrame(ViewerOutput *viewer, ColorManager* color_manager,
@@ -236,7 +225,7 @@ RenderTicketPtr RenderManager::SaveFrameToCache(FrameHashCache *cache, FramePtr 
 
 void RenderManager::RunTicket(RenderTicketPtr ticket) const
 {
-  RenderProcessor::Process(ticket, context_, still_cache_, decoder_cache_, shader_cache_, default_shader_);
+  RenderProcessor::Process(ticket, context_, decoder_cache_, shader_cache_, default_shader_);
 }
 
 }

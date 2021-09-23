@@ -51,8 +51,6 @@ ViewerOutput::ViewerOutput(bool create_buffer_inputs, bool create_default_stream
 
   AddInput(kAudioParamsInput, NodeValue::kAudioParams, InputFlags(kInputFlagNotConnectable | kInputFlagNotKeyframable | kInputFlagArray));
 
-  connect(this, &Node::InputArraySizeChanged, this, &ViewerOutput::InputResized);
-
   if (create_buffer_inputs) {
     AddInput(kTextureInput, NodeValue::kTexture, InputFlags(kInputFlagNotKeyframable));
     AddInput(kSamplesInput, NodeValue::kSamples, InputFlags(kInputFlagNotKeyframable));
@@ -254,20 +252,6 @@ void ViewerOutput::InvalidateCache(const TimeRange& range, const QString& from, 
   super::InvalidateCache(range, from, element, options);
 }
 
-QVector<QString> ViewerOutput::inputs_for_output(const QString &output) const
-{
-  QVector<QString> inputs;
-  Track::Type type = Track::Reference::TypeFromString(output);
-
-  if (type == Track::kVideo) {
-    inputs.append(kTextureInput);
-  } else if (type == Track::kAudio) {
-    inputs.append(kSamplesInput);
-  }
-
-  return inputs;
-}
-
 QVector<Track::Reference> ViewerOutput::GetEnabledStreamsAsReferences() const
 {
   QVector<Track::Reference> refs;
@@ -331,7 +315,7 @@ void ViewerOutput::VerifyLength()
   }
 }
 
-void ViewerOutput::InputConnectedEvent(const QString &input, int element, const NodeOutput &output)
+void ViewerOutput::InputConnectedEvent(const QString &input, int element, Node *output)
 {
   if (input == kTextureInput) {
     emit TextureInputChanged();
@@ -340,7 +324,7 @@ void ViewerOutput::InputConnectedEvent(const QString &input, int element, const 
   super::InputConnectedEvent(input, element, output);
 }
 
-void ViewerOutput::InputDisconnectedEvent(const QString &input, int element, const NodeOutput &output)
+void ViewerOutput::InputDisconnectedEvent(const QString &input, int element, Node *output)
 {
   if (input == kTextureInput) {
     emit TextureInputChanged();
@@ -356,7 +340,7 @@ rational ViewerOutput::VerifyLengthInternal(Track::Type type) const
   switch (type) {
   case Track::kVideo:
     if (IsInputConnected(kTextureInput)) {
-      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kTextureInput), TimeRange(0, 0));
+      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kTextureInput), GetValueHintForInput(kTextureInput), TimeRange(0, 0));
       rational r = t.Get(NodeValue::kRational, QStringLiteral("length")).value<rational>();
       if (!r.isNaN()) {
         return r;
@@ -365,7 +349,7 @@ rational ViewerOutput::VerifyLengthInternal(Track::Type type) const
     break;
   case Track::kAudio:
     if (IsInputConnected(kSamplesInput)) {
-      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kSamplesInput), TimeRange(0, 0));
+      NodeValueTable t = traverser.GenerateTable(GetConnectedOutput(kSamplesInput), GetValueHintForInput(kSamplesInput), TimeRange(0, 0));
       rational r = t.Get(NodeValue::kRational, QStringLiteral("length")).value<rational>();;
       if (!r.isNaN()) {
         return r;
@@ -381,14 +365,24 @@ rational ViewerOutput::VerifyLengthInternal(Track::Type type) const
   return 0;
 }
 
-NodeOutput ViewerOutput::GetConnectedTextureOutput()
+Node *ViewerOutput::GetConnectedTextureOutput()
 {
   return GetConnectedOutput(kTextureInput);
 }
 
-NodeOutput ViewerOutput::GetConnectedSampleOutput()
+Node::ValueHint ViewerOutput::GetConnectedTextureValueHint()
+{
+  return GetValueHintForInput(kTextureInput);
+}
+
+Node *ViewerOutput::GetConnectedSampleOutput()
 {
   return GetConnectedOutput(kSamplesInput);
+}
+
+Node::ValueHint ViewerOutput::GetConnectedSampleValueHint()
+{
+  return GetValueHintForInput(kSamplesInput);
 }
 
 void ViewerOutput::InputValueChangedEvent(const QString &input, int element)
@@ -544,23 +538,6 @@ int ViewerOutput::AddStream(Track::Type type, const QVariant& value)
   SetStandardValue(id, value, index);
 
   return index;
-}
-
-void ViewerOutput::InputResized(const QString &input, int old_size, int new_size)
-{
-  if (input == kVideoParamsInput || input == kAudioParamsInput) {
-    Track::Type type = (input == kVideoParamsInput) ? Track::kVideo : Track::kAudio;
-
-    if (new_size > old_size) {
-      for (int i=old_size; i<new_size; i++) {
-        AddOutput(Track::Reference(type, i).ToString());
-      }
-    } else if (new_size < old_size) {
-      for (int i=new_size; i<old_size; i++) {
-        RemoveOutput(Track::Reference(type, i).ToString());
-      }
-    }
-  }
 }
 
 QVector<VideoParams> ViewerOutput::GetEnabledVideoStreams() const

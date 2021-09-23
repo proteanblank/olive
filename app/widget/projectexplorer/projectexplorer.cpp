@@ -65,6 +65,7 @@ ProjectExplorer::ProjectExplorer(QWidget *parent) :
 
   // Set up sort filter proxy model
   sort_model_.setSourceModel(&model_);
+  sort_model_.setSortRole(ProjectViewModel::kInnerTextRole);
 
   // Add tree view to stacked widget
   tree_view_ = new ProjectExplorerTreeView(stacked_widget_);
@@ -253,14 +254,19 @@ QAbstractItemView *ProjectExplorer::CurrentView() const
 void ProjectExplorer::ItemClickedSlot(const QModelIndex &index)
 {
   if (index.isValid()) {
-    if (clicked_index_ == index) {
-      // The item has been clicked more than once, start a timer for renaming
-      rename_timer_.start();
-    } else {
-      // Cache this index for the next click
-      clicked_index_ = index;
+    if (CurrentView()->selectionModel()->selectedRows().size() == 1) {
+      if (clicked_index_ == index) {
+        // The item has been clicked more than once, start a timer for renaming
+        rename_timer_.start();
+      } else {
+        // Cache this index for the next click
+        clicked_index_ = index;
 
-      // If the rename timer had started, stop it now
+        // If the rename timer had started, stop it now
+        rename_timer_.stop();
+      }
+    } else {
+      clicked_index_ = QModelIndex();
       rename_timer_.stop();
     }
   } else {

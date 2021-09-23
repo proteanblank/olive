@@ -34,6 +34,7 @@
 #include "common/rational.h"
 #include "common/timerange.h"
 #include "common/xmlutils.h"
+#include "node/globals.h"
 #include "node/keyframe.h"
 #include "node/inputimmediate.h"
 #include "node/param.h"
@@ -46,7 +47,11 @@
 
 namespace olive {
 
-#define NODE_DEFAULT_DESTRUCTOR(x) virtual ~x() override {DisconnectAll();}
+#define NODE_DEFAULT_DESTRUCTOR(x) \
+  virtual ~x() override {DisconnectAll();}
+
+#define NODE_COPY_FUNCTION(x) \
+  virtual Node *copy() const override {return new x();}
 
 class NodeGraph;
 class Folder;
@@ -88,7 +93,7 @@ public:
     kCategoryCount
   };
 
-  Node(bool create_default_output = true);
+  Node();
 
   virtual ~Node() override;
 
@@ -183,6 +188,9 @@ public:
 
   virtual QString duration() const {return QString();}
 
+  virtual qint64 creation_time() const {return 0;}
+  virtual qint64 mod_time() const {return 0;}
+
   virtual QString rate() const {return QString();}
 
   const QVector<QString>& inputs() const
@@ -190,30 +198,14 @@ public:
     return input_ids_;
   }
 
-  virtual QVector<QString> inputs_for_output(const QString& output) const
-  {
-    Q_UNUSED(output)
-    return inputs();
-  }
-
-  const QVector<QString>& outputs() const
-  {
-    return outputs_;
-  }
-
   bool HasInputWithID(const QString& id) const
   {
     return input_ids_.contains(id);
   }
 
-  bool HasOutputWithID(const QString& id) const
-  {
-    return outputs_.contains(id);
-  }
-
   bool HasParamWithID(const QString& id) const
   {
-    return HasInputWithID(id) || HasOutputWithID(id);
+    return HasInputWithID(id);
   }
 
   /**
@@ -247,9 +239,9 @@ public:
     }
   }
 
-  static void ConnectEdge(const NodeOutput& output, const NodeInput& input);
+  static void ConnectEdge(Node *output, const NodeInput& input);
 
-  static void DisconnectEdge(const NodeOutput& output, const NodeInput& input);
+  static void DisconnectEdge(Node *output, const NodeInput& input);
 
   QString GetInputName(const QString& id) const;
 
@@ -287,21 +279,11 @@ public:
     return IsInputStatic(input.input(), input.element());
   }
 
-  NodeOutput GetConnectedOutput(const QString& input, int element = -1) const;
+  Node *GetConnectedOutput(const QString& input, int element = -1) const;
 
-  NodeOutput GetConnectedOutput(const NodeInput& input) const
+  Node *GetConnectedOutput(const NodeInput& input) const
   {
     return GetConnectedOutput(input.input(), input.element());
-  }
-
-  Node* GetConnectedNode(const QString& input, int element = -1) const
-  {
-    return GetConnectedOutput(input, element).node();
-  }
-
-  Node* GetConnectedNode(const NodeInput& input) const
-  {
-    return GetConnectedNode(input.input(), input.element());
   }
 
   bool IsUsingStandardValue(const QString& input, int track, int element = -1) const;
@@ -480,9 +462,65 @@ public:
 
   int InputArraySize(const QString& id) const;
 
+  class ValueHint {
+  public:
+    explicit ValueHint(const QVector<NodeValue::Type> &types = QVector<NodeValue::Type>(), int index = -1, const QString &tag = QString()) :
+      type_(types),
+      index_(index),
+      tag_(tag)
+    {
+    }
+
+    explicit ValueHint(const QVector<NodeValue::Type> &types, const QString &tag) :
+      type_(types),
+      index_(-1),
+      tag_(tag)
+    {
+    }
+
+    explicit ValueHint(int index) :
+      index_(index)
+    {
+    }
+
+    explicit ValueHint(const QString &tag) :
+      index_(-1),
+      tag_(tag)
+    {
+    }
+
+    void Hash(QCryptographicHash &hash) const;
+
+    void Load(QXmlStreamReader *reader);
+    void Save(QXmlStreamWriter *writer) const;
+
+    const QVector<NodeValue::Type> &types() const { return type_; }
+    const int &index() const { return index_; }
+    const QString& tag() const { return tag_; }
+
+    void set_type(const QVector<NodeValue::Type> &type) { type_ = type; }
+    void set_index(const int &index) { index_ = index; }
+    void set_tag(const QString &tag) { tag_ = tag; }
+
+  private:
+    QVector<NodeValue::Type> type_;
+    int index_;
+    QString tag_;
+
+  };
+
+  static void Hash(const Node *node, const ValueHint &hint, QCryptographicHash& hash, const NodeGlobals &globals, const VideoParams& video_params);
+
+  ValueHint GetValueHintForInput(const QString &input, int element = -1) const
+  {
+    return value_hints_.value({input, element});
+  }
+
+  void SetValueHintForInput(const QString &input, const ValueHint &hint, int element = -1);
+
   const NodeKeyframeTrack& GetTrackFromKeyframe(NodeKeyframe* key) const;
 
-  using InputConnections = std::map<NodeInput, NodeOutput>;
+  using InputConnections = std::map<NodeInput, Node*>;
 
   /**
    * @brief Return map of input connections
@@ -495,7 +533,7 @@ public:
     return input_connections_;
   }
 
-  using OutputConnection = std::pair<NodeOutput, NodeInput>;
+  using OutputConnection = std::pair<Node*, NodeInput>;
   using OutputConnections = std::vector<OutputConnection>;
 
   /**
@@ -535,7 +573,7 @@ public:
   /**
    * @brief If Value() pushes a ShaderJob, this is the function that will process them.
    */
-  virtual void ProcessSamples(NodeValueDatabase &values, const SampleBufferPtr input, SampleBufferPtr output, int index) const;
+  virtual void ProcessSamples(const NodeValueRow &values, const SampleBufferPtr input, SampleBufferPtr output, int index) const;
 
   /**
    * @brief If Value() pushes a GenerateJob, override this function for the image to create
@@ -715,20 +753,21 @@ public:
    * corresponding output if it's connected to one. If your node doesn't directly deal with time, the default behavior
    * of the NodeParam objects will handle everything related to it automatically.
    */
-  virtual NodeValueTable Value(const QString &output, NodeValueDatabase& value) const;
+  virtual void Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const;
 
   virtual bool HasGizmos() const;
 
-  virtual void DrawGizmos(NodeValueDatabase& db, QPainter* p);
+  virtual void DrawGizmos(const NodeValueRow& row, const NodeGlobals &globals, QPainter* p);
 
-  virtual bool GizmoPress(NodeValueDatabase& db, const QPointF& p);
-  virtual void GizmoMove(const QPointF& p, const rational &time);
+  virtual bool GizmoPress(const NodeValueRow& row, const NodeGlobals &globals, const QPointF& p);
+  virtual void GizmoMove(const QPointF& p, const rational &time, const Qt::KeyboardModifiers &modifiers);
   virtual void GizmoRelease();
 
   const QString& GetLabel() const;
   void SetLabel(const QString& s);
 
-  virtual void Hash(const QString& output, QCryptographicHash& hash, const rational &time, const VideoParams& video_params) const;
+  QString GetLabelAndName() const;
+  QString GetLabelOrName() const;
 
   void InvalidateAll(const QString& input, int element = -1);
 
@@ -760,8 +799,6 @@ public:
   {
     cache_result_ = e;
   }
-
-  static const QString kDefaultOutput;
 
   class ArrayRemoveCommand : public UndoCommand
   {
@@ -849,6 +886,10 @@ protected:
 
   };
 
+  virtual void Hash(QCryptographicHash& hash, const NodeGlobals &globals, const VideoParams& video_params) const;
+
+  void HashAddNodeSignature(QCryptographicHash &hash) const;
+
   void InsertInput(const QString& id, NodeValue::Type type, const QVariant& default_value, InputFlags flags, int index);
 
   void PrependInput(const QString& id, NodeValue::Type type, const QVariant& default_value, InputFlags flags = InputFlags(kInputFlagNormal))
@@ -872,10 +913,6 @@ protected:
   }
 
   void RemoveInput(const QString& id);
-
-  void AddOutput(const QString& id = kDefaultOutput);
-
-  void RemoveOutput(const QString& id);
 
   void SetInputName(const QString& id, const QString& name);
 
@@ -928,13 +965,13 @@ protected:
 
   virtual void InputValueChangedEvent(const QString& input, int element);
 
-  virtual void InputConnectedEvent(const QString& input, int element, const NodeOutput& output);
+  virtual void InputConnectedEvent(const QString& input, int element, Node *output);
 
-  virtual void InputDisconnectedEvent(const QString& input, int element, const NodeOutput& output);
+  virtual void InputDisconnectedEvent(const QString& input, int element, Node *output);
 
-  virtual void OutputConnectedEvent(const QString& output, const NodeInput& input);
+  virtual void OutputConnectedEvent(const NodeInput& input);
 
-  virtual void OutputDisconnectedEvent(const QString& output, const NodeInput& input);
+  virtual void OutputDisconnectedEvent(const NodeInput& input);
 
   virtual void childEvent(QChildEvent *event) override;
 
@@ -958,13 +995,15 @@ signals:
 
   void ValueChanged(const NodeInput& input, const TimeRange& range);
 
-  void InputConnected(const NodeOutput& output, const NodeInput& input);
+  void InputConnected(Node *output, const NodeInput& input);
 
-  void InputDisconnected(const NodeOutput& output, const NodeInput& input);
+  void InputDisconnected(Node *output, const NodeInput& input);
 
-  void OutputConnected(const NodeOutput& output, const NodeInput& input);
+  void OutputConnected(Node *output, const NodeInput& input);
 
-  void OutputDisconnected(const NodeOutput& output, const NodeInput& input);
+  void OutputDisconnected(Node *output, const NodeInput& input);
+
+  void InputValueHintChanged(const NodeInput& input);
 
   void InputPropertyChanged(const QString& input, const QString& key, const QVariant& value);
 
@@ -983,10 +1022,6 @@ signals:
   void InputAdded(const QString& id);
 
   void InputRemoved(const QString& id);
-
-  void OutputAdded(const QString& id);
-
-  void OutputRemoved(const QString& id);
 
   void InputNameChanged(const QString& id, const QString& name);
 
@@ -1049,7 +1084,7 @@ private:
 
           try {
             NodeInput input(node_, input_, i);
-            NodeOutput output = node_->input_connections().at(input);
+            Node *output = node_->input_connections().at(input);
 
             removed_connections_[input] = output;
 
@@ -1142,7 +1177,7 @@ private:
 
   QVector<Node*> GetDependenciesInternal(bool traverse, bool exclusive_only) const;
 
-  void HashInputElement(QCryptographicHash& hash, const QString &input, int element, const rational& time, const VideoParams &video_params) const;
+  void HashInputElement(QCryptographicHash& hash, const QString &input, int element, const NodeGlobals &globals, const VideoParams &video_params) const;
 
   void ParameterValueChanged(const QString &input, int element, const olive::TimeRange &range);
   void ParameterValueChanged(const NodeInput& input, const olive::TimeRange &range)
@@ -1193,8 +1228,6 @@ private:
   QVector<QString> input_ids_;
   QVector<Input> input_data_;
 
-  QVector<QString> outputs_;
-
   QMap<QString, NodeInputImmediate*> standard_immediates_;
 
   QMap<QString, QVector<NodeInputImmediate*> > array_immediates_;
@@ -1210,6 +1243,8 @@ private:
   int operation_stack_;
 
   bool cache_result_;
+
+  QMap<InputElementPair, ValueHint> value_hints_;
 
 private slots:
   /**
@@ -1243,7 +1278,7 @@ template<class T>
 void Node::FindInputNodeInternal(const Node* n, QVector<T *> &list)
 {
   for (auto it=n->input_connections_.cbegin(); it!=n->input_connections_.cend(); it++) {
-    Node* edge = it->second.node();
+    Node* edge = it->second;
     T* cast_test = dynamic_cast<T*>(edge);
 
     if (cast_test) {
@@ -1401,7 +1436,7 @@ protected:
 
   virtual void undo() override
   {
-    sub_command_->undo();
+    sub_command_->undo_now();
   }
 
 private:
@@ -1523,5 +1558,7 @@ private:
 };
 
 }
+
+Q_DECLARE_METATYPE(olive::Node::ValueHint)
 
 #endif // NODE_H

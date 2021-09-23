@@ -204,7 +204,7 @@ void ViewerDisplayWidget::IncrementSkippedFrames()
 void ViewerDisplayWidget::mousePressEvent(QMouseEvent *event)
 {
   if (event->button() == Qt::LeftButton && gizmos_
-      && gizmos_->GizmoPress(gizmo_db_, TransformViewerSpaceToBufferSpace(event->pos()))) {
+      && gizmos_->GizmoPress(gizmo_db_, NodeTraverser::GenerateGlobals(gizmo_params_, GenerateGizmoTime()), TransformViewerSpaceToBufferSpace(event->pos()))) {
 
     // Handle gizmo click
     gizmo_click_ = true;
@@ -246,7 +246,8 @@ void ViewerDisplayWidget::mouseMoveEvent(QMouseEvent *event)
 
     // Signal movement
     gizmos_->GizmoMove(TransformViewerSpaceToBufferSpace(event->pos()),
-                       gizmo_drag_time_);
+                       gizmo_drag_time_,
+                       event->modifiers());
     gizmo_start_drag_ = event->pos();
     update();
 
@@ -400,14 +401,12 @@ void ViewerDisplayWidget::OnPaint()
     NodeTraverser gt;
     gt.SetCacheVideoParams(gizmo_params_);
 
-    rational node_time = GetGizmoTime();
-
-    gizmo_db_ = gt.GenerateDatabase(gizmos_, QString(),
-                                    TimeRange(node_time, node_time + gizmo_params_.frame_rate_as_time_base()));
+    TimeRange range = GenerateGizmoTime();
+    gizmo_db_ = gt.GenerateRow(gizmos_, range);
 
     QPainter p(inner_widget());
     p.setWorldTransform(GenerateGizmoTransform());
-    gizmos_->DrawGizmos(gizmo_db_, &p);
+    gizmos_->DrawGizmos(gizmo_db_, NodeTraverser::GenerateGlobals(gizmo_params_, range), &p);
   }
 
   // Draw action/title safe areas

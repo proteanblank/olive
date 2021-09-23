@@ -260,6 +260,10 @@ public:
    * @brief Convert a value from a NodeParam into bytes
    */
   static QByteArray ValueToBytes(Type type, const QVariant& value);
+  static QByteArray ValueToBytes(const NodeValue &value)
+  {
+    return ValueToBytes(value.type(), value.data());
+  }
 
   static QVector<QVariant> split_normal_value_into_track_values(Type type, const QVariant &value);
 
@@ -381,19 +385,26 @@ public:
   bool Has(NodeValue::Type type) const;
   void Remove(const NodeValue& v);
 
+  void Clear()
+  {
+    values_.clear();
+  }
+
   bool isEmpty() const
   {
     return values_.isEmpty();
   }
 
+  int GetValueIndex(const QVector<NodeValue::Type> &type, const QString& tag) const;
+
   static NodeValueTable Merge(QList<NodeValueTable> tables);
 
 private:
-  int GetInternal(const QVector<NodeValue::Type> &type, const QString& tag) const;
-
   QVector<NodeValue> values_;
 
 };
+
+using NodeValueRow = QHash<QString, NodeValue>;
 
 }
 

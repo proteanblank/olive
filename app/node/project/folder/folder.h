@@ -104,9 +104,13 @@ public:
 
     foreach (Node* node, item_children_) {
       T* cast_test = dynamic_cast<T*>(node);
-
       if (cast_test) {
         list.append(cast_test);
+      }
+
+      Folder *folder_test = dynamic_cast<Folder*>(node);
+      if (folder_test) {
+        list.append(folder_test->ListChildrenOfType<T>());
       }
     }
 
@@ -141,7 +145,7 @@ public:
     virtual void undo() override
     {
       if (subcommand_) {
-        subcommand_->undo();
+        subcommand_->undo_now();
       }
     }
 
@@ -166,9 +170,9 @@ signals:
   void EndRemoveItem();
 
 protected:
-  virtual void InputConnectedEvent(const QString& input, int element, const NodeOutput& output) override;
+  virtual void InputConnectedEvent(const QString& input, int element, Node *output) override;
 
-  virtual void InputDisconnectedEvent(const QString& input, int element, const NodeOutput& output) override;
+  virtual void InputDisconnectedEvent(const QString& input, int element, Node *output) override;
 
 private:
   template<typename T>

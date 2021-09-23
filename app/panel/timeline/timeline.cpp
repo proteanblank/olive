@@ -38,140 +38,142 @@ TimelinePanel::TimelinePanel(QWidget *parent) :
 
 void TimelinePanel::SplitAtPlayhead()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->SplitAtPlayhead();
+  timeline_widget()->SplitAtPlayhead();
 }
 
 QByteArray TimelinePanel::SaveSplitterState() const
 {
-  return static_cast<TimelineWidget*>(GetTimeBasedWidget())->SaveSplitterState();
+  return timeline_widget()->SaveSplitterState();
 }
 
 void TimelinePanel::RestoreSplitterState(const QByteArray &state)
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->RestoreSplitterState(state);
+  timeline_widget()->RestoreSplitterState(state);
 }
 
 void TimelinePanel::SelectAll()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->SelectAll();
+  timeline_widget()->SelectAll();
 }
 
 void TimelinePanel::DeselectAll()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->DeselectAll();
+  timeline_widget()->DeselectAll();
 }
 
 void TimelinePanel::RippleToIn()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->RippleToIn();
+  timeline_widget()->RippleToIn();
 }
 
 void TimelinePanel::RippleToOut()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->RippleToOut();
+  timeline_widget()->RippleToOut();
 }
 
 void TimelinePanel::EditToIn()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->EditToIn();
+  timeline_widget()->EditToIn();
 }
 
 void TimelinePanel::EditToOut()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->EditToOut();
+  timeline_widget()->EditToOut();
 }
 
 void TimelinePanel::DeleteSelected()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->DeleteSelected(false);
+  timeline_widget()->DeleteSelected(false);
 }
 
 void TimelinePanel::RippleDelete()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->DeleteSelected(true);
+  timeline_widget()->DeleteSelected(true);
 }
 
 void TimelinePanel::IncreaseTrackHeight()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->IncreaseTrackHeight();
+  timeline_widget()->IncreaseTrackHeight();
 }
 
 void TimelinePanel::DecreaseTrackHeight()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->DecreaseTrackHeight();
-}
-
-void TimelinePanel::Insert()
-{
-  FootageManagementPanel* project_panel = PanelManager::instance()->MostRecentlyFocused<FootageManagementPanel>();
-
-  if (project_panel) {
-    InsertFootageAtPlayhead(project_panel->GetSelectedFootage());
-  }
-}
-
-void TimelinePanel::Overwrite()
-{
-  FootageManagementPanel* project_panel = PanelManager::instance()->MostRecentlyFocused<FootageManagementPanel>();
-
-  if (project_panel) {
-    OverwriteFootageAtPlayhead(project_panel->GetSelectedFootage());
-  }
+  timeline_widget()->DecreaseTrackHeight();
 }
 
 void TimelinePanel::ToggleLinks()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->ToggleLinksOnSelected();
+  timeline_widget()->ToggleLinksOnSelected();
 }
 
 void TimelinePanel::CutSelected()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->CopySelected(true);
+  timeline_widget()->CopySelected(true);
 }
 
 void TimelinePanel::CopySelected()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->CopySelected(false);
+  timeline_widget()->CopySelected(false);
 }
 
 void TimelinePanel::Paste()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->Paste(false);
+  timeline_widget()->Paste(false);
 }
 
 void TimelinePanel::PasteInsert()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->Paste(true);
+  timeline_widget()->Paste(true);
 }
 
 void TimelinePanel::DeleteInToOut()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->DeleteInToOut(false);
+  timeline_widget()->DeleteInToOut(false);
 }
 
 void TimelinePanel::RippleDeleteInToOut()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->DeleteInToOut(true);
+  timeline_widget()->DeleteInToOut(true);
 }
 
 void TimelinePanel::ToggleSelectedEnabled()
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->ToggleSelectedEnabled();
+  timeline_widget()->ToggleSelectedEnabled();
 }
 
 void TimelinePanel::SetColorLabel(int index)
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->SetColorLabel(index);
+  timeline_widget()->SetColorLabel(index);
+}
+
+void TimelinePanel::NudgeLeft()
+{
+  timeline_widget()->NudgeLeft();
+}
+
+void TimelinePanel::NudgeRight()
+{
+  timeline_widget()->NudgeRight();
+}
+
+void TimelinePanel::MoveInToPlayhead()
+{
+  timeline_widget()->MoveInToPlayhead();
+}
+
+void TimelinePanel::MoveOutToPlayhead()
+{
+  timeline_widget()->MoveOutToPlayhead();
 }
 
 void TimelinePanel::InsertFootageAtPlayhead(const QVector<ViewerOutput *> &footage)
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->InsertFootageAtPlayhead(footage);
+  timeline_widget()->InsertFootageAtPlayhead(footage);
 }
 
 void TimelinePanel::OverwriteFootageAtPlayhead(const QVector<ViewerOutput *> &footage)
 {
-  static_cast<TimelineWidget*>(GetTimeBasedWidget())->OverwriteFootageAtPlayhead(footage);
+  timeline_widget()->OverwriteFootageAtPlayhead(footage);
 }
 
 void TimelinePanel::Retranslate()

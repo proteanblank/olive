@@ -39,7 +39,9 @@ struct XMLNodeData {
   struct SerializedConnection {
     NodeInput input;
     quintptr output_node;
-    QString output;
+
+    /// Deprecated
+    QString output_param;
   };
 
   struct BlockLink {

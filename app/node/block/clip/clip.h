@@ -21,6 +21,7 @@
 #ifndef CLIPBLOCK_H
 #define CLIPBLOCK_H
 
+#include "audio/audiovisualwaveform.h"
 #include "node/block/block.h"
 
 namespace olive {
@@ -32,7 +33,7 @@ class ClipBlock : public Block
 {
   Q_OBJECT
 public:
-  ClipBlock(bool create_buffer_in = true);
+  ClipBlock();
 
   NODE_DEFAULT_DESTRUCTOR(ClipBlock)
 
@@ -42,19 +43,89 @@ public:
   virtual QString id() const override;
   virtual QString Description() const override;
 
+  virtual void set_length_and_media_out(const rational &length) override;
+  virtual void set_length_and_media_in(const rational &length) override;
+
+  rational media_in() const;
+  void set_media_in(const rational& media_in);
+
   virtual void InvalidateCache(const TimeRange& range, const QString& from, int element, InvalidateCacheOptions options) override;
 
   virtual TimeRange InputTimeAdjustment(const QString& input, int element, const TimeRange& input_time) const override;
 
   virtual TimeRange OutputTimeAdjustment(const QString& input, int element, const TimeRange& input_time) const override;
 
-  virtual NodeValueTable Value(const QString& output, NodeValueDatabase& value) const override;
+  virtual void Value(const NodeValueRow& value, const NodeGlobals &globals, NodeValueTable *table) const override;
 
   virtual void Retranslate() override;
 
-  virtual void Hash(const QString& output, QCryptographicHash &hash, const rational &time, const VideoParams& video_params) const override;
+  double speed() const
+  {
+    return GetStandardValue(kSpeedInput).toDouble();
+  }
+
+  bool reverse() const
+  {
+    return GetStandardValue(kReverseInput).toBool();
+  }
+
+  TransitionBlock* in_transition()
+  {
+    return in_transition_;
+  }
+
+  void set_in_transition(TransitionBlock* t)
+  {
+    in_transition_ = t;
+  }
+
+  TransitionBlock* out_transition()
+  {
+    return out_transition_;
+  }
+
+  void set_out_transition(TransitionBlock* t)
+  {
+    out_transition_ = t;
+  }
+
+  const QVector<Block*>& block_links() const
+  {
+    return block_links_;
+  }
+
+  AudioVisualWaveform& waveform()
+  {
+    return waveform_;
+  }
 
   static const QString kBufferIn;
+  static const QString kMediaInInput;
+  static const QString kSpeedInput;
+  static const QString kReverseInput;
+
+protected:
+  virtual void LinkChangeEvent() override;
+
+  virtual void InputValueChangedEvent(const QString &input, int element) override;
+
+  virtual void Hash(QCryptographicHash &hash, const NodeGlobals &globals, const VideoParams& video_params) const override;
+
+private:
+  rational SequenceToMediaTime(const rational& sequence_time, bool ignore_reverse = false) const;
+
+  rational MediaToSequenceTime(const rational& media_time) const;
+
+  QVector<Block*> block_links_;
+
+  TransitionBlock* in_transition_;
+  TransitionBlock* out_transition_;
+
+private:
+  AudioVisualWaveform waveform_;
+
+  rational last_media_in_;
+
 
 };
 

@@ -34,6 +34,7 @@
 #include "node/generator/matrix/matrix.h"
 #include "node/math/math/math.h"
 #include "node/project/sequence/sequence.h"
+#include "widget/nodeparamview/nodeparamviewundo.h"
 #include "widget/nodeview/nodeviewundo.h"
 #include "widget/timelinewidget/undo/timelineundopointer.h"
 #include "window/mainwindow/mainwindow.h"
@@ -81,7 +82,7 @@ void ImportTool::DragEnter(TimelineViewMouseEvent *event)
 
       if (f && f->GetTotalStreamCount()) {
         // If the Item is Footage, we can create a Ghost from it
-        dragged_footage_.insert(f, enabled_streams);
+        dragged_footage_.append({f, enabled_streams});
       }
     }
 
@@ -131,10 +132,9 @@ void ImportTool::DragMove(TimelineViewMouseEvent *event)
 
       // Generate tooltip (showing earliest in point of imported clip)
       rational tooltip_timebase = parent()->GetTimebaseForTrackType(event->GetTrack().type());
-      int64_t earliest_timestamp = Timecode::time_to_timestamp(earliest_ghost, tooltip_timebase);
-      QString tooltip_text = Timecode::timestamp_to_timecode(earliest_timestamp,
-                                                             tooltip_timebase,
-                                                             Core::instance()->GetTimecodeDisplay());
+      QString tooltip_text = Timecode::time_to_timecode(earliest_ghost,
+                                                        tooltip_timebase,
+                                                        Core::instance()->GetTimecodeDisplay());
 
       // Force tooltip to update (otherwise the tooltip won't move as written in the documentation, and could get in the way
       // of the cursor)
@@ -175,16 +175,16 @@ void ImportTool::DragDrop(TimelineViewMouseEvent *event)
 
 void ImportTool::PlaceAt(const QVector<ViewerOutput *> &footage, const rational &start, bool insert)
 {
-  QMap<ViewerOutput*, QVector<Track::Reference> > refs;
+  DraggedFootageData refs;
 
   foreach (ViewerOutput* f, footage) {
-    refs.insert(f, f->GetEnabledStreamsAsReferences());
+    refs.append({f, f->GetEnabledStreamsAsReferences()});
   }
 
   PlaceAt(refs, start, insert);
 }
 
-void ImportTool::PlaceAt(const QMap<ViewerOutput*, QVector<Track::Reference> > &footage, const rational &start, bool insert)
+void ImportTool::PlaceAt(const DraggedFootageData &footage, const rational &start, bool insert)
 {
   dragged_footage_ = footage;
 
@@ -196,12 +196,12 @@ void ImportTool::PlaceAt(const QMap<ViewerOutput*, QVector<Track::Reference> > &
   DropGhosts(insert);
 }
 
-void ImportTool::FootageToGhosts(rational ghost_start, const QMap<ViewerOutput *, QVector<Track::Reference> > &sorted, const rational& dest_tb, const int& track_start)
+void ImportTool::FootageToGhosts(rational ghost_start, const DraggedFootageData &sorted, const rational& dest_tb, const int& track_start)
 {
   for (auto it=sorted.cbegin(); it!=sorted.cend(); it++) {
-    ViewerOutput* footage = it.key();
+    ViewerOutput* footage = it->first;
 
-    if (footage == sequence()) {
+    if (footage == sequence() || (sequence() && sequence()->OutputsTo(footage, true))) {
       // Prevent cyclical dependency
       continue;
     }
@@ -233,7 +233,7 @@ void ImportTool::FootageToGhosts(rational ghost_start, const QMap<ViewerOutput *
     }
 
     // Create ghosts
-    foreach (const Track::Reference& ref, it.value()) {
+    foreach (const Track::Reference& ref, it->second) {
       Track::Type track_type = ref.type();
 
       TimelineViewGhostItem* ghost = new TimelineViewGhostItem();
@@ -249,7 +249,7 @@ void ImportTool::FootageToGhosts(rational ghost_start, const QMap<ViewerOutput *
       // Increment track count for this track type
       track_offsets[track_type]++;
 
-      TimelineViewGhostItem::AttachedFootage af = {it.key(), ref.ToString()};
+      TimelineViewGhostItem::AttachedFootage af = {it->first, ref.ToString()};
       ghost->SetData(TimelineViewGhostItem::kAttachedFootage, QVariant::fromValue(af));
       ghost->SetMode(Timeline::kMove);
 
@@ -326,19 +326,20 @@ void ImportTool::DropGhosts(bool insert)
 
         bool sequence_is_valid = true;
 
-        if (behavior == kDWSAuto) {
+        // Even if the user selected manual, set from footage anyway so the user has a useful
+        // starting point
+        QVector<ViewerOutput*> footage_only;
 
-          QVector<ViewerOutput*> footage_only;
-
-          for (auto it=dragged_footage_.cbegin(); it!=dragged_footage_.cend(); it++) {
-            if (!footage_only.contains(it.key())) {
-              footage_only.append(it.key());
-            }
+        for (auto it=dragged_footage_.cbegin(); it!=dragged_footage_.cend(); it++) {
+          if (!footage_only.contains(it->first)) {
+            footage_only.append(it->first);
           }
+        }
 
-          new_sequence->set_parameters_from_footage(footage_only);
+        new_sequence->set_parameters_from_footage(footage_only);
 
-        } else {
+        // If the user selected manual, show them a dialog with parameters
+        if (behavior == kDWSManual) {
 
           SequenceDialog sd(new_sequence, SequenceDialog::kNew, parent());
           sd.SetUndoable(false);
@@ -386,8 +387,6 @@ void ImportTool::DropGhosts(bool insert)
 
       TimelineViewGhostItem::AttachedFootage footage_stream = ghost->GetData(TimelineViewGhostItem::kAttachedFootage).value<TimelineViewGhostItem::AttachedFootage>();
 
-      NodeOutput corresponding_output(footage_stream.footage, footage_stream.output);
-
       ClipBlock* clip = new ClipBlock();
       clip->set_media_in(ghost->GetMediaIn());
       clip->set_length_and_media_out(ghost->GetLength());
@@ -406,7 +405,9 @@ void ImportTool::DropGhosts(bool insert)
         TransformDistortNode* transform = new TransformDistortNode();
         command->add_child(new NodeAddCommand(dst_graph, transform));
 
-        command->add_child(new NodeEdgeAddCommand(corresponding_output, NodeInput(transform, TransformDistortNode::kTextureInput)));
+        command->add_child(new NodeSetValueHintCommand(transform, TransformDistortNode::kTextureInput, -1, Node::ValueHint({NodeValue::kTexture}, footage_stream.output)));
+
+        command->add_child(new NodeEdgeAddCommand(footage_stream.footage, NodeInput(transform, TransformDistortNode::kTextureInput)));
         command->add_child(new NodeEdgeAddCommand(transform, NodeInput(clip, ClipBlock::kBufferIn)));
         command->add_child(new NodeSetPositionCommand(transform, clip, QPointF(-1, 0), false));
         break;
@@ -416,7 +417,9 @@ void ImportTool::DropGhosts(bool insert)
         VolumeNode* volume_node = new VolumeNode();
         command->add_child(new NodeAddCommand(dst_graph, volume_node));
 
-        command->add_child(new NodeEdgeAddCommand(corresponding_output, NodeInput(volume_node, VolumeNode::kSamplesInput)));
+        command->add_child(new NodeSetValueHintCommand(volume_node, VolumeNode::kSamplesInput, -1, Node::ValueHint({NodeValue::kSamples}, footage_stream.output)));
+
+        command->add_child(new NodeEdgeAddCommand(footage_stream.footage, NodeInput(volume_node, VolumeNode::kSamplesInput)));
         command->add_child(new NodeEdgeAddCommand(volume_node, NodeInput(clip, ClipBlock::kBufferIn)));
         command->add_child(new NodeSetPositionCommand(volume_node, clip, QPointF(-1, 0), false));
         break;

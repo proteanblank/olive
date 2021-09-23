@@ -33,7 +33,6 @@ extern "C" {
 
 #include "codec/frame.h"
 #include "codec/samplebuffer.h"
-#include "codec/waveoutput.h"
 #include "common/rational.h"
 #include "node/project/footage/footage.h"
 #include "node/project/footage/footagedescription.h"
@@ -185,7 +184,7 @@ public:
    *
    * This function is thread safe and can only run while the decoder is open. \see Open()
    */
-  FramePtr RetrieveVideo(const rational& timecode, const RetrieveVideoParams& divider);
+  FramePtr RetrieveVideo(const rational& timecode, const RetrieveVideoParams& divider, const QAtomicInt *cancelled = nullptr);
 
   enum RetrieveAudioStatus {
     kInvalid = -1,
@@ -285,7 +284,7 @@ protected:
    * Sub-classes must override this function IF they support video. Function is already mutexed
    * so sub-classes don't need to worry about thread safety.
    */
-  virtual FramePtr RetrieveVideoInternal(const rational& timecode, const RetrieveVideoParams& divider);
+  virtual FramePtr RetrieveVideoInternal(const rational& timecode, const RetrieveVideoParams& divider, const QAtomicInt *cancelled);
 
   virtual bool ConformAudioInternal(const QString& filename, const AudioParams &params, const QAtomicInt* cancelled);
 
@@ -313,7 +312,7 @@ signals:
 private:
   void UpdateLastAccessed();
 
-  SampleBufferPtr RetrieveAudioFromConform(const QString& conform_filename, const TimeRange &range, Footage::LoopMode loop_mode);
+  SampleBufferPtr RetrieveAudioFromConform(const QString& conform_filename, const TimeRange &range, Footage::LoopMode loop_mode, const AudioParams &params);
 
   CodecStream stream_;
 

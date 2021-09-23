@@ -27,14 +27,16 @@
 
 namespace olive {
 
+// Keep this aligned with the kMaximumSampleRate in AudioVisualWaveform
+const double TimeScaledObject::kMaximumScale = 1024;
+
 const int TimeScaledObject::kCalculateDimensionsPadding = 10;
 
 TimeScaledObject::TimeScaledObject() :
   scale_(1.0),
   min_scale_(0),
-  max_scale_(DBL_MAX)
+  max_scale_(kMaximumScale)
 {
-
 }
 
 void TimeScaledObject::SetTimebase(const rational &timebase)
@@ -72,12 +74,12 @@ rational TimeScaledObject::SceneToTime(const double &x, const double &x_scale, c
   return rational(rounded_x_mvmt * timebase.numerator(), timebase.denominator());
 }
 
-double TimeScaledObject::TimeToScene(const rational &time)
+double TimeScaledObject::TimeToScene(const rational &time) const
 {
   return time.toDouble() * scale_;
 }
 
-rational TimeScaledObject::SceneToTime(const double &x, bool round)
+rational TimeScaledObject::SceneToTime(const double &x, bool round) const
 {
   return SceneToTime(x, scale_, timebase_, round);
 }

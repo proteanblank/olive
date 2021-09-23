@@ -79,6 +79,11 @@ public:
 
   void ZoomOut();
 
+  const QVector<Node*> &GetCurrentContexts() const
+  {
+    return filter_nodes_;
+  }
+
 public slots:
   void SetMiniMapEnabled(bool e)
   {
@@ -141,7 +146,9 @@ private:
 
   Menu *CreateAddMenu(Menu *parent);
 
-  void CreateNewEdge(NodeViewItem *output_item);
+  void CreateNewEdge(NodeViewItem *output_item, const QPoint &mouse_pos);
+
+  void PositionNewEdge(const QPoint &pos);
 
   NodeViewItem *UpdateNodeItem(Node *node, bool ignore_own_context = false);
 
@@ -209,7 +216,6 @@ private:
 
   NodeViewEdge* create_edge_;
   NodeViewItem* create_edge_src_;
-  QString create_edge_src_output_;
   NodeViewItem* create_edge_dst_;
   NodeInput create_edge_dst_input_;
   bool create_edge_dst_temp_expanded_;
@@ -279,8 +285,8 @@ private slots:
 
   //void AddNode(Node *node);
   void RemoveNode(Node *node);
-  void AddEdge(const NodeOutput& output, const NodeInput& input);
-  void RemoveEdge(const NodeOutput& output, const NodeInput& input);
+  void AddEdge(Node *output, const NodeInput& input);
+  void RemoveEdge(Node *output, const NodeInput& input);
 
   void AddNodePosition(Node *node, Node *relative);
   void RemoveNodePosition(Node *node, Node *relative);

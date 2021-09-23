@@ -176,6 +176,13 @@ void TimeRange::normalize()
   length_ = out_ - in_;
 }
 
+void TimeRangeList::insert(const TimeRangeList &list_to_add)
+{
+  for (auto it=list_to_add.cbegin(); it!=list_to_add.cend(); it++) {
+    insert(*it);
+  }
+}
+
 void TimeRangeList::insert(TimeRange range_to_add)
 {
   // See if list contains this range
@@ -200,6 +207,13 @@ void TimeRangeList::insert(TimeRange range_to_add)
 void TimeRangeList::remove(const TimeRange &remove)
 {
   util_remove(&array_, remove);
+}
+
+void TimeRangeList::remove(const TimeRangeList &list)
+{
+  for (const TimeRange &r : list) {
+    remove(r);
+  }
 }
 
 bool TimeRangeList::contains(const TimeRange &range, bool in_inclusive, bool out_inclusive) const
@@ -284,6 +298,10 @@ TimeRangeListFrameIterator::TimeRangeListFrameIterator(const TimeRangeList &list
   index_(-1),
   size_(-1)
 {
+  if (!list_.isEmpty() && timebase_.isNull()) {
+    qCritical() << "TimeRangeListFrameIterator created with null timebase but non-empty list, this will likely lead to infinite loops";
+  }
+
   UpdateIndexIfNecessary();
 }
 

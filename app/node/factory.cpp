@@ -33,6 +33,7 @@
 #include "distort/transform/transformdistortnode.h"
 #include "generator/matrix/matrix.h"
 #include "generator/polygon/polygon.h"
+#include "generator/shape/shapenode.h"
 #include "generator/solid/solid.h"
 #include "generator/text/text.h"
 #include "filter/blur/blur.h"
@@ -62,10 +63,6 @@ void NodeFactory::Initialize()
     Node* created_node = CreateFromFactoryIndex(static_cast<InternalID>(i));
 
     library_.append(created_node);
-
-    if (created_node->outputs().isEmpty()) {
-      qWarning() << "Node" << created_node->id() << "has no outputs";
-    }
   }
 }
 
@@ -239,13 +236,14 @@ Node *NodeFactory::CreateFromFactoryIndex(const NodeFactory::InternalID &id)
     return new TimeRemapNode();
   case kSubtitleBlock:
     return new SubtitleBlock();
+  case kShapeGenerator:
+    return new ShapeNode();
 
   case kInternalNodeCount:
     break;
   }
 
-  // We should never get here
-  abort();
+  return nullptr;
 }
 
 }

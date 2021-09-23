@@ -20,7 +20,6 @@
 
 #include "nodeview.h"
 
-#include <cfloat>
 #include <QInputDialog>
 #include <QMouseEvent>
 #include <QScrollBar>
@@ -363,9 +362,13 @@ void NodeView::Duplicate()
 
 void NodeView::SetColorLabel(int index)
 {
+  MultiUndoCommand *command = new MultiUndoCommand();
+
   for (Node* node : qAsConst(selected_nodes_)) {
-    node->SetOverrideColor(index);
+    command->add_child(new NodeOverrideColorCommand(node, index));
   }
+
+  Core::instance()->undo_stack()->push(command);
 }
 
 void NodeView::ZoomIn()
@@ -431,7 +434,7 @@ void NodeView::keyPressEvent(QKeyEvent *event)
 
       // We undo the last action which SHOULD be adding the node
       if (paste_command_) {
-        paste_command_->undo();
+        paste_command_->undo_now();
         delete paste_command_;
         paste_command_ = nullptr;
       }
@@ -456,8 +459,7 @@ void NodeView::mousePressEvent(QMouseEvent *event)
 
     for (NodeViewEdge *edge_item : scene_.edges()) {
       if (edge_item->arrow_bounding_rect().contains(scene_pt)) {
-        create_edge_src_ = scene_.NodeToUIObject(edge_item->output().node());
-        create_edge_src_output_ = edge_item->output().output();
+        create_edge_src_ = scene_.NodeToUIObject(edge_item->output());
         create_edge_ = edge_item;
         create_edge_already_exists_ = true;
         return;
@@ -467,7 +469,7 @@ void NodeView::mousePressEvent(QMouseEvent *event)
     // See if we're dragging the arrow of a node
     for (NodeViewItem *node_item : scene_.item_map()) {
       if (node_item->GetOutputTriangle().boundingRect().translated(node_item->pos()).contains(scene_pt)) {
-        CreateNewEdge(node_item);
+        CreateNewEdge(node_item, event->pos());
         return;
       }
     }
@@ -492,7 +494,7 @@ void NodeView::mousePressEvent(QMouseEvent *event)
   if (event->modifiers() & Qt::ControlModifier) {
     NodeViewItem* node_item = dynamic_cast<NodeViewItem*>(item);
     if (node_item) {
-      CreateNewEdge(node_item);
+      CreateNewEdge(node_item, event->pos());
       return;
     }
   }
@@ -505,68 +507,7 @@ void NodeView::mouseMoveEvent(QMouseEvent *event)
   if (HandMove(event)) return;
 
   if (create_edge_) {
-    // Determine scene coordinate
-    QPointF scene_pt = mapToScene(event->pos());
-
-    // Find if the cursor is currently inside an item
-    NodeViewItem* item_at_cursor = dynamic_cast<NodeViewItem*>(itemAt(event->pos()));
-
-    // Filter out connecting to self
-    if (item_at_cursor == create_edge_src_) {
-      item_at_cursor = nullptr;
-    }
-
-    // Filter out connecting to a node that connects to us
-    if (item_at_cursor && item_at_cursor->GetNode()->OutputsTo(create_edge_src_->GetNode(), true)) {
-      item_at_cursor = nullptr;
-    }
-
-    // If the item has changed
-    if (item_at_cursor != create_edge_dst_) {
-      // If we had a destination active, disconnect from it since the item has changed
-      if (create_edge_dst_) {
-        create_edge_dst_->SetHighlightedIndex(-1);
-
-        if (create_edge_dst_temp_expanded_) {
-          // We expanded this item, so we can un-expand it
-          create_edge_dst_->SetExpanded(false);
-          create_edge_dst_->setZValue(0);
-        }
-      }
-
-      // Set destination
-      create_edge_dst_ = item_at_cursor;
-
-      // If our destination is an item, ensure it's expanded
-      if (create_edge_dst_) {
-        if ((create_edge_dst_temp_expanded_ = (!create_edge_dst_->IsExpanded()))) {
-          create_edge_dst_->SetExpanded(true, true);
-          create_edge_dst_->setZValue(100); // Ensure item is in front
-        }
-      }
-    }
-
-    // If we have a destination, highlight the appropriate input
-    int highlight_index = -1;
-    if (create_edge_dst_) {
-      highlight_index = create_edge_dst_->GetIndexAt(scene_pt);
-      create_edge_dst_->SetHighlightedIndex(highlight_index);
-    }
-
-    if (highlight_index >= 0) {
-      create_edge_dst_input_ = create_edge_dst_->GetInputAtIndex(highlight_index);
-      create_edge_->SetPoints(create_edge_src_->GetOutputPoint(Node::kDefaultOutput),
-                              create_edge_dst_->GetInputPoint(create_edge_dst_input_.input(), create_edge_dst_input_.element(), create_edge_src_->pos()),
-                              true);
-    } else {
-      create_edge_dst_input_.Reset();
-      create_edge_->SetPoints(create_edge_src_->GetOutputPoint(Node::kDefaultOutput),
-                              scene_pt,
-                              false);
-    }
-
-    // Set connected to whether we have a valid input destination
-    create_edge_->SetConnected(create_edge_dst_input_.IsValid());
+    PositionNewEdge(event->pos());
     return;
   }
 
@@ -599,12 +540,10 @@ void NodeView::mouseMoveEvent(QMouseEvent *event)
 
           NodeValue::Type drop_edge_data_type = NodeValue::kNone;
 
-          // Run the Node and guess what type it's actually returning
+          // Run the Node and determine what type is being used
           NodeTraverser traverser;
-          NodeValueTable table = traverser.GenerateTable(new_drop_edge->output(), TimeRange(0, 0));
-          if (table.Count() > 0) {
-            drop_edge_data_type = table.at(table.Count() - 1).type();
-          }
+          NodeValue drop_edge_value = traverser.GenerateRow(new_drop_edge->output(), TimeRange(0, 0))[new_drop_edge->input().input()];
+          drop_edge_data_type = drop_edge_value.type();
 
           // Iterate through the inputs of our dragging node and see if our node has any acceptable
           // inputs to connect to for this type
@@ -690,7 +629,7 @@ void NodeView::mouseReleaseEvent(QMouseEvent *event)
       if (creating_input.IsValid()) {
         // Make connection
         if (!reconnected_to_itself) {
-          NodeOutput creating_output(create_edge_src_->GetNode(), create_edge_src_output_);
+          Node *creating_output = create_edge_src_->GetNode();
 
           if (creating_input.IsConnected()) {
             Node::OutputConnection existing_edge_to_remove = {creating_input.GetConnectedOutput(), creating_input};
@@ -713,7 +652,7 @@ void NodeView::mouseReleaseEvent(QMouseEvent *event)
       UpdateContextsFromEdgeRemove(command, removed_edges);
     }
 
-    if (added_edge.first.IsValid()) {
+    if (added_edge.first) {
       UpdateContextsFromEdgeAdd(command, added_edge, removed_edges);
     }
 
@@ -757,7 +696,7 @@ void NodeView::mouseReleaseEvent(QMouseEvent *event)
       }
     }
     if (set_pos_command->child_count()) {
-      set_pos_command->redo();
+      set_pos_command->redo_now();
       command->add_child(set_pos_command);
     } else {
       delete set_pos_command;
@@ -784,7 +723,7 @@ void NodeView::mouseReleaseEvent(QMouseEvent *event)
         drop_edge_ = nullptr;
       }
       if (drop_edge_command->child_count()) {
-        drop_edge_command->redo();
+        drop_edge_command->redo_now();
         command->add_child(drop_edge_command);
       } else {
         delete drop_edge_command;
@@ -822,7 +761,7 @@ void NodeView::mouseReleaseEvent(QMouseEvent *event)
       }
 
       if (remove_pos_command->child_count()) {
-        remove_pos_command->redo();
+        remove_pos_command->redo_now();
         command->add_child(remove_pos_command);
       } else {
         delete remove_pos_command;
@@ -988,7 +927,7 @@ void NodeView::CreateNodeSlot(QAction *action)
       paste_command_->add_child(new NodeSetPositionCommand(new_node, context, QPointF(0, 0), false));
     }
     paste_command_->add_child(new NodeViewAttachNodesToCursor(this, {new_node}));
-    paste_command_->redo();
+    paste_command_->redo_now();
 
     this->setFocus();
   }
@@ -1051,9 +990,9 @@ void NodeView::RemoveNode(Node *node)
   scene_.RemoveNode(node);
 }
 
-void NodeView::AddEdge(const NodeOutput &output, const NodeInput &input)
+void NodeView::AddEdge(Node *output, const NodeInput &input)
 {
-  Node *output_node = output.node();
+  Node *output_node = output;
   Node *input_node = input.node();
 
   if (scene_.item_map().contains(output_node) && scene_.item_map().contains(input_node)) {
@@ -1061,7 +1000,7 @@ void NodeView::AddEdge(const NodeOutput &output, const NodeInput &input)
   }
 }
 
-void NodeView::RemoveEdge(const NodeOutput &output, const NodeInput &input)
+void NodeView::RemoveEdge(Node *output, const NodeInput &input)
 {
   scene_.RemoveEdge(output, input);
 }
@@ -1363,7 +1302,7 @@ void NodeView::UpdateContextsFromEdgeRemove(MultiUndoCommand *command, const Nod
 {
   // For each edge we remove, determine if we should remove the node from a context as well
   for (const Node::OutputConnection &edge : remove_edges) {
-    Node *output_node = edge.first.node();
+    Node *output_node = edge.first;
     QVector<Node *> contexts_to_remove_from;
     int contexts_containing = 0;
 
@@ -1414,7 +1353,7 @@ void NodeView::RecursivelyRemoveFloatingNodeFromContext(MultiUndoCommand *comman
 
   // Remove any dependency from the context that's also floating
   for (auto it=node->input_connections().cbegin(); it!=node->input_connections().cend(); it++) {
-    Node *dependency = it->second.node();
+    Node *dependency = it->second;
 
     // Determine if this node happens to output to anything else in the context (which may be
     // another floating node that won't be removed by this operation)
@@ -1426,12 +1365,16 @@ void NodeView::RecursivelyRemoveFloatingNodeFromContext(MultiUndoCommand *comman
 
 void NodeView::RecursivelyAddNodeToContext(MultiUndoCommand *command, Node *node, Node *context)
 {
-  command->add_child(new NodeSetPositionCommand(node, context, GetEstimatedPositionForContext(scene_.item_map().value(node), context), false));
+  NodeViewItem *item = scene_.item_map().value(node);
 
-  // Add dependency
-  for (auto it=node->input_connections().cbegin(); it!=node->input_connections().cend(); it++) {
-    Node *dependency = it->second.node();
-    RecursivelyAddNodeToContext(command, dependency, context);
+  if (item) {
+    command->add_child(new NodeSetPositionCommand(node, context, GetEstimatedPositionForContext(item, context), false));
+
+    // Add dependency
+    for (auto it=node->input_connections().cbegin(); it!=node->input_connections().cend(); it++) {
+      Node *dependency = it->second;
+      RecursivelyAddNodeToContext(command, dependency, context);
+    }
   }
 }
 
@@ -1439,7 +1382,7 @@ void NodeView::UpdateContextsFromEdgeAdd(MultiUndoCommand *command, const Node::
 {
   // Determine if node currently does NOT output to a context that it WILL after this operation
   QVector<Node*> contexts_to_add_to;
-  Node *connecting_node = added_edge.first.node();
+  Node *connecting_node = added_edge.first;
   Node *input_node = added_edge.second.node();
   for (auto it=graph_->GetPositionMap().cbegin(); it!=graph_->GetPositionMap().cend(); it++) {
     if (it.value().contains(input_node)) {
@@ -1490,17 +1433,84 @@ Menu *NodeView::CreateAddMenu(Menu *parent)
   return add_menu;
 }
 
-void NodeView::CreateNewEdge(NodeViewItem *output_item)
+void NodeView::CreateNewEdge(NodeViewItem *output_item, const QPoint &mouse_pos)
 {
   create_edge_ = new NodeViewEdge();
   create_edge_src_ = output_item;
-  create_edge_src_output_ = Node::kDefaultOutput;
   create_edge_already_exists_ = false;
 
   create_edge_->SetCurved(scene_.GetEdgesAreCurved());
   create_edge_->SetFlowDirection(scene_.GetFlowDirection());
 
   scene_.addItem(create_edge_);
+
+  PositionNewEdge(mouse_pos);
+}
+
+void NodeView::PositionNewEdge(const QPoint &pos)
+{
+  // Determine scene coordinate
+  QPointF scene_pt = mapToScene(pos);
+
+  // Find if the cursor is currently inside an item
+  NodeViewItem* item_at_cursor = dynamic_cast<NodeViewItem*>(itemAt(pos));
+
+  // Filter out connecting to self
+  if (item_at_cursor == create_edge_src_) {
+    item_at_cursor = nullptr;
+  }
+
+  // Filter out connecting to a node that connects to us
+  if (item_at_cursor && item_at_cursor->GetNode()->OutputsTo(create_edge_src_->GetNode(), true)) {
+    item_at_cursor = nullptr;
+  }
+
+  // If the item has changed
+  if (item_at_cursor != create_edge_dst_) {
+    // If we had a destination active, disconnect from it since the item has changed
+    if (create_edge_dst_) {
+      create_edge_dst_->SetHighlightedIndex(-1);
+
+      if (create_edge_dst_temp_expanded_) {
+        // We expanded this item, so we can un-expand it
+        create_edge_dst_->SetExpanded(false);
+        create_edge_dst_->setZValue(0);
+      }
+    }
+
+    // Set destination
+    create_edge_dst_ = item_at_cursor;
+
+    // If our destination is an item, ensure it's expanded
+    if (create_edge_dst_) {
+      if ((create_edge_dst_temp_expanded_ = (!create_edge_dst_->IsExpanded()))) {
+        create_edge_dst_->SetExpanded(true, true);
+        create_edge_dst_->setZValue(100); // Ensure item is in front
+      }
+    }
+  }
+
+  // If we have a destination, highlight the appropriate input
+  int highlight_index = -1;
+  if (create_edge_dst_) {
+    highlight_index = create_edge_dst_->GetIndexAt(scene_pt);
+    create_edge_dst_->SetHighlightedIndex(highlight_index);
+  }
+
+  if (highlight_index >= 0) {
+    create_edge_dst_input_ = create_edge_dst_->GetInputAtIndex(highlight_index);
+    create_edge_->SetPoints(create_edge_src_->GetOutputPoint(),
+                            create_edge_dst_->GetInputPoint(create_edge_dst_input_.input(), create_edge_dst_input_.element(), create_edge_src_->pos()),
+                            true);
+  } else {
+    create_edge_dst_input_.Reset();
+    create_edge_->SetPoints(create_edge_src_->GetOutputPoint(),
+                            scene_pt,
+                            false);
+  }
+
+  // Set connected to whether we have a valid input destination
+  create_edge_->SetConnected(create_edge_dst_input_.IsValid());
 }
 
 void NodeView::RepositionContexts()
@@ -1591,7 +1601,7 @@ NodeViewItem *NodeView::UpdateNodeItem(Node *node, bool ignore_own_context)
     item = scene_.AddNode(node);
 
     for (auto it=node->input_connections().cbegin(); it!=node->input_connections().cend(); it++) {
-      if (scene_.item_map().contains(it->second.node())) {
+      if (scene_.item_map().contains(it->second)) {
         scene_.AddEdge(it->second, it->first);
       }
     }
@@ -1604,7 +1614,7 @@ NodeViewItem *NodeView::UpdateNodeItem(Node *node, bool ignore_own_context)
   }
 
   // Determine "view" position by averaging the Y value and "min"ing the X value of all contexts
-  QPointF item_pos(DBL_MAX, 0.0);
+  QPointF item_pos(std::numeric_limits<qreal>::max(), 0.0);
   int average_count = 0;
   for (Node *context : qAsConst(filter_nodes_)) {
     if (context == node && ignore_own_context) {
@@ -1673,7 +1683,7 @@ void NodeView::PasteNodesInternal(const QVector<Node *> &duplicate_nodes)
   // Attach nodes to cursor
   paste_command_->add_child(new NodeViewAttachNodesToCursor(this, new_nodes));
 
-  paste_command_->redo();
+  paste_command_->redo_now();
 }
 
 NodeView::NodeViewAttachNodesToCursor::NodeViewAttachNodesToCursor(NodeView *view, const QVector<Node *> &nodes) :

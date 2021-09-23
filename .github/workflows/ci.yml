@@ -127,24 +127,10 @@ jobs:
 
       - name: Upload Artifact to GitHub
         uses: actions/upload-artifact@v2
+        continue-on-error: true
         with:
           name: ${{ steps.package.outputs.artifact }}
           path: build/Olive*.AppImage
-
-      - name: Upload Packages to Nightly Page
-        working-directory: build
-        env:
-          GH_AUTH_KEY: ${{ secrets.GH_AUTH_KEY }}
-          PKGNAME: ${{ steps.package.outputs.pkgname }}
-        if: github.event_name == 'push' && matrix.cc-compiler == 'gcc'
-        run: |
-          $UPLOAD_TOOL \
-            -F file="@$PKGNAME" \
-            -F key="$GH_AUTH_KEY" \
-            -F hash="$GITHUB_SHA" \
-            -F time="$(git show -s --format=%ct)" \
-            -F comment="$(git show -s --format=%B)" \
-            https://ci.olivevideoeditor.org/push.php
 
   windows:
     strategy:
@@ -188,6 +174,13 @@ jobs:
         run: |
           $DOWNLOAD_TOOL https://github.com/olive-editor/dependencies/releases/download/continuous/olive-dep-win32.tar.gz
           tar xzf olive-dep-win32.tar.gz
+
+      - name: Acquire Google Crashpad
+        shell: bash
+        working-directory: ${{ runner.workspace }}
+        run: |
+          $DOWNLOAD_TOOL https://github.com/olive-editor/crashpad/releases/download/continuous/crashpad-win32-RelWithDebInfo.tar.gz
+          tar xzf crashpad-win32-RelWithDebInfo.tar.gz
 
       - name: Generate Patreon List
         shell: bash
@@ -273,32 +266,10 @@ jobs:
 
       - name: Upload Portable Artifact to GitHub
         uses: actions/upload-artifact@v2
+        continue-on-error: true
         with:
           name: ${{ env.PKGNAME }}.zip
           path: ${{ runner.workspace }}/build/${{ env.PKGNAME }}.zip
-
-      - name: Upload Packages to Nightly Page
-        shell: bash
-        working-directory: ${{ runner.workspace }}/build
-        env:
-          GH_AUTH_KEY: ${{ secrets.GH_AUTH_KEY }}
-        if: github.event_name == 'push'
-        run: |
-          $UPLOAD_TOOL \
-            -F file=@$PKGNAME.exe \
-            -F key="$GH_AUTH_KEY" \
-            -F hash="$GITHUB_SHA" \
-            -F time="$(git -C $GITHUB_WORKSPACE show -s --format=%ct)" \
-            -F comment="$(git -C $GITHUB_WORKSPACE show -s --format=%B)" \
-            https://ci.olivevideoeditor.org/push.php
-
-          $UPLOAD_TOOL \
-            -F file=@$PKGNAME.zip \
-            -F key="$GH_AUTH_KEY" \
-            -F hash="$GITHUB_SHA" \
-            -F time="$(git -C $GITHUB_WORKSPACE show -s --format=%ct)" \
-            -F comment="$(git -C $GITHUB_WORKSPACE show -s --format=%B)" \
-            https://ci.olivevideoeditor.org/push.php
 
   macos:
     strategy:
@@ -310,8 +281,6 @@ jobs:
             os-arch: x86_64
             os: macos-latest
             cmake-gen: Ninja
-    env:
-      DEP_LOCATION: /opt/olive-editor
     name: |
       ${{ matrix.os-name }}
       <${{ matrix.compiler-name }},
@@ -322,6 +291,9 @@ jobs:
     steps:
       - name: Checkout Source Code
         uses: actions/checkout@v2
+
+      - name: Set up Homebrew
+        uses: Homebrew/actions/setup-homebrew@master
 
       - name: Automatically Generate Package Name
         shell: bash
@@ -339,8 +311,21 @@ jobs:
         shell: bash
         working-directory: ${{ runner.workspace }}
         run: |
-          $DOWNLOAD_TOOL https://github.com/olive-editor/dependencies/releases/download/continuous/olive-dep-mac-x86_64.tar.gz
-          sudo tar xzf olive-dep-mac-x86_64.tar.gz -C /
+          # HACK: Workaround for https://github.com/actions/virtual-environments/issues/4020
+          rm -rf /usr/local/bin/2to3
+
+          brew update
+          brew upgrade
+          brew tap olive-editor/homebrew
+          brew install -f qt5 ffmpeg-olive openimageio-olive opencolorio opentimelineio
+          echo "/usr/local/opt/qt@5/bin" >> $GITHUB_PATH
+
+      - name: Acquire Google Crashpad
+        shell: bash
+        working-directory: ${{ runner.workspace }}
+        run: |
+          $DOWNLOAD_TOOL https://github.com/olive-editor/crashpad/releases/download/continuous/crashpad-mac-x86_64.tar.gz
+          sudo tar xzf crashpad-mac-x86_64.tar.gz -C /
 
       - name: Generate Patreon List
         env:
@@ -356,7 +341,7 @@ jobs:
         working-directory: ${{ runner.workspace }}/build
         run: |
           brew install ninja
-          PATH=$DEP_LOCATION:$DEP_LOCATION/crashpad:$PATH \
+          PATH=/opt/olive-editor/bin:/opt/olive-editor/crashpad:$PATH \
             cmake $GITHUB_WORKSPACE -DCMAKE_OSX_DEPLOYMENT_TARGET=10.13 -DCMAKE_BUILD_TYPE=${{ matrix.build-type }} -G "${{ matrix.cmake-gen }}" -DCMAKE_INSTALL_PREFIX=$DEP_LOCATION
 
       - name: Build
@@ -379,12 +364,12 @@ jobs:
         run: |
           # Use macdeployqt and macdeployqt to bundle dependencies
           mv app/$BUNDLE_NAME .
-          $DEP_LOCATION/bin/macdeployqt $BUNDLE_NAME -executable=$BUNDLE_NAME/Contents/MacOS/olive-crashhandler
+          macdeployqt $BUNDLE_NAME -executable=$BUNDLE_NAME/Contents/MacOS/olive-crashhandler
           $DOWNLOAD_TOOL https://github.com/arl/macdeployqtfix/raw/master/macdeployqtfix.py
-          python2 macdeployqtfix.py $BUNDLE_NAME/Contents/MacOS/Olive $DEP_LOCATION
+          python2 macdeployqtfix.py $BUNDLE_NAME/Contents/MacOS/Olive
 
           # Crashpad symbols
-          $DEP_LOCATION/bin/dump_syms $BUNDLE_NAME/Contents/MacOS/Olive > Olive.sym
+          /opt/olive-editor/bin/dump_syms $BUNDLE_NAME/Contents/MacOS/Olive > Olive.sym
           SYM_HEADER=($(head -n 1 Olive.sym)) # Read first line of symbol file
           SYM_DIR=$BUNDLE_NAME/Contents/Resources/symbols/Olive/${SYM_HEADER[3]}
           mkdir -p "$SYM_DIR"
@@ -398,21 +383,7 @@ jobs:
 
       - name: Upload Artifact to GitHub
         uses: actions/upload-artifact@v2
+        continue-on-error: true
         with:
           name: ${{ env.PKGNAME }}.zip
           path: ${{ runner.workspace }}/build/${{ env.PKGNAME }}.zip
-
-      - name: Upload Packages to Nightly Page
-        shell: bash
-        working-directory: ${{ runner.workspace }}/build
-        env:
-          GH_AUTH_KEY: ${{ secrets.GH_AUTH_KEY }}
-        if: github.event_name == 'push'
-        run: |
-          $UPLOAD_TOOL \
-            -F file=@$PKGNAME.zip \
-            -F key="$GH_AUTH_KEY" \
-            -F hash="$GITHUB_SHA" \
-            -F time="$(git -C $GITHUB_WORKSPACE show -s --format=%ct)" \
-            -F comment="$(git -C $GITHUB_WORKSPACE show -s --format=%B)" \
-            https://ci.olivevideoeditor.org/push.php
